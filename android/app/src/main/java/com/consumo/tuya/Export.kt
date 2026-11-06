@@ -202,30 +202,72 @@ object Exporter {
 }
 
 /** Tabela de consumo (uma linha por hora/dia/mês) com linha de total. */
-fun energyTable(fileName: String, title: String, step: String, buckets: List<Bucket>, tariff: Double): ExportTable {
+fun energyTable(fileName: String, title: String, step: String, buckets: List<Bucket>, cost: CostModel): ExportTable {
     val rows = buckets.map { b ->
         listOf(
             fullLabel(step, b.start),
             fmtDateTime(b.start),
             b.kwh,
-            b.kwh?.times(tariff),
+            cost.cost(b.kwh, b.start),
             if (b.kwh == null) null else if (b.estimated) "Sim" else "Não",
-        )
+        ) + (if (cost.detailed) listOf(cost.flagAt(b.start).label) else emptyList())
     }
     val total = buckets.sumOf { it.kwh ?: 0.0 }
+    val totalCost = buckets.sumOf { cost.cost(it.kwh, it.start) ?: 0.0 }
+    val cols = listOf(
+        Col("Período", ColFmt.TEXT),
+        Col("Início", ColFmt.TEXT),
+        Col("Consumo (kWh)", ColFmt.KWH),
+        Col("Custo (R$)", ColFmt.BRL),
+        Col("Estimado", ColFmt.TEXT),
+    ) + (if (cost.detailed) listOf(Col("Bandeira", ColFmt.TEXT)) else emptyList())
+    val totalRow = listOf("Total", null, total, totalCost, null) + (if (cost.detailed) listOf(null) else emptyList())
+    return ExportTable(fileName = fileName, title = title, cols = cols, rows = rows + listOf(totalRow))
+}
+
+/** Uma linha por recarga, com linha de total. */
+fun sessionsTable(fileName: String, title: String, sessions: List<Session>, cost: CostModel): ExportTable {
+    val rows = sessions.map { s ->
+        listOf(
+            fullLabel("day", s.start),
+            if (s.manual) "sem horário" else fmtTime(s.start),
+            s.end?.let { fmtTime(it) },
+            s.durationMs?.let { it / 60_000.0 },
+            s.kwh,
+            cost.cost(s.kwh, s.start),
+            s.avgW,
+            s.peakW,
+            when {
+                s.manual -> "Anotação manual"
+                s.ongoing -> "Em andamento"
+                s.estimated -> "Estimado"
+                else -> "Medido"
+            },
+        )
+    }
+    val totalMin = sessions.sumOf { (it.durationMs ?: 0L) / 60_000.0 }
+    val totalKwh = sessions.sumOf { it.kwh }
+    val totalCost = sessions.sumOf { cost.cost(it.kwh, it.start) ?: 0.0 }
     return ExportTable(
         fileName = fileName,
         title = title,
         cols = listOf(
-            Col("Período", ColFmt.TEXT),
+            Col("Dia", ColFmt.TEXT),
             Col("Início", ColFmt.TEXT),
+            Col("Fim", ColFmt.TEXT),
+            Col("Duração (min)", ColFmt.WATT),
             Col("Consumo (kWh)", ColFmt.KWH),
             Col("Custo (R$)", ColFmt.BRL),
-            Col("Estimado", ColFmt.TEXT),
+            Col("Potência média (W)", ColFmt.WATT),
+            Col("Pico (W)", ColFmt.WATT),
+            Col("Origem", ColFmt.TEXT),
         ),
-        rows = rows + listOf(listOf("Total", null, total, total * tariff, null)),
+        rows = rows + listOf(listOf("Total (${sessions.size} recargas)", null, null, totalMin, totalKwh, totalCost, null, null, null)),
     )
 }
+
+private val TIME_ONLY = DateTimeFormatter.ofPattern("HH:mm")
+private fun fmtTime(ms: Long): String = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(TIME_ONLY)
 
 /** Menu "Exportar" → CSV / Excel. */
 @Composable

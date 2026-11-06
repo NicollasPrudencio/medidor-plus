@@ -38,8 +38,9 @@ if (-not $env:JAVA_HOME) {
     }
 }
 
-& .\gradlew.bat assembleRelease
-if ($LASTEXITCODE -ne 0) { throw "Falha no build" }
+# Testes primeiro: não publica se algum falhar
+& .\gradlew.bat testReleaseUnitTest assembleRelease
+if ($LASTEXITCODE -ne 0) { throw "Falha nos testes ou no build — nada foi publicado" }
 
 $apk = "app\build\outputs\apk\release\app-release.apk"
 if (-not (Test-Path $apk)) { throw "APK não encontrado em $apk" }

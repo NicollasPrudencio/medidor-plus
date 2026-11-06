@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS manual_daily (
   note      TEXT
 );
 
+-- Bandeira tarifária vigente em cada mês (verde, amarela, vermelha1, vermelha2)
+CREATE TABLE IF NOT EXISTS bandeiras (
+  month TEXT PRIMARY KEY, -- AAAA-MM
+  cor   TEXT NOT NULL
+);
+
 -- Cache do token da Tuya
 CREATE TABLE IF NOT EXISTS meta (
   key     TEXT PRIMARY KEY,

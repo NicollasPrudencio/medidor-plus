@@ -57,6 +57,11 @@ export default {
           return json(await seriesApi(env, Number(q.get("start")), Number(q.get("end")), q.get("step")));
         case "/api/power":
           return json(await powerApi(env, Number(q.get("start")), Number(q.get("end"))));
+        case "/api/sessions":
+          return json(await sessionsApi(env, Number(q.get("start")), Number(q.get("end"))));
+        case "/api/bandeiras":
+          if (req.method === "PUT") return json(await setBandeira(env, q.get("month"), q.get("cor")));
+          return json(await getBandeiras(env));
         case "/api/collect":
           return json(await collect(env));
         default:
@@ -381,6 +386,117 @@ async function powerApi(env, start, end) {
     .bind(start, end)
     .all();
   return results.map((r) => ({ ts: r.ts, w: (r.power ?? 0) / 10 }));
+}
+
+// ---------- Recargas (sessões de potência alta) ----------
+
+const SESSION_MIN_W = 300; // potência média mínima de um intervalo entre leituras para contar como recarga
+const SESSION_HIGH_W = 1000; // potência instantânea que caracteriza recarga em andamento
+const SESSION_GAP = 20 * 60_000; // interrupções menores que isso não separam a recarga
+const WH_MS = 3.6e9; // kWh × WH_MS / W = duração em ms
+
+async function sessionsApi(env, start, end) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || end - start > 400 * DAY) {
+    throw new Error("use start e end em ms (máx. 400 dias)");
+  }
+  const { results: rows } = await env.DB.prepare(
+    `SELECT ts, energy, power FROM readings
+      WHERE ts >= COALESCE((SELECT MAX(ts) FROM readings WHERE ts <= ?1), 0)
+        AND ts <= COALESCE((SELECT MIN(ts) FROM readings WHERE ts >= ?2), ?2)
+      ORDER BY ts`
+  )
+    .bind(start, end)
+    .all();
+
+  const sessions = [];
+  let cur = null;
+  for (let i = 1; i < rows.length; i++) {
+    const a = rows[i - 1];
+    const b = rows[i];
+    const dt = b.ts - a.ts;
+    if (dt <= 0) continue;
+    const de = b.energy >= a.energy ? b.energy - a.energy : b.energy; // contador zerado
+    const kwh = de / 100;
+    const avgW = (kwh * WH_MS) / dt;
+    const pa = (a.power ?? 0) / 10;
+    const pb = (b.power ?? 0) / 10;
+    if (kwh <= 0 || (avgW < SESSION_MIN_W && pa < SESSION_HIGH_W && pb < SESSION_HIGH_W)) continue;
+
+    // Ajusta início/fim dentro do intervalo usando a potência observada
+    let s0 = a.ts;
+    let s1 = b.ts;
+    let inferred = false;
+    if (pa < SESSION_HIGH_W && pb >= SESSION_HIGH_W) s0 = Math.max(a.ts, b.ts - (kwh * WH_MS) / pb);
+    else if (pa >= SESSION_HIGH_W && pb < SESSION_HIGH_W) s1 = Math.min(b.ts, a.ts + (kwh * WH_MS) / pa);
+    else if (pa < SESSION_HIGH_W && pb < SESSION_HIGH_W) inferred = true; // recarga inteira entre duas leituras
+    // só é estimativa se houve energia relevante dentro de um intervalo longo sem leituras
+    const est = dt > 30 * 60_000 && kwh >= 0.5 && (inferred || s0 !== a.ts || s1 !== b.ts);
+
+    if (cur && s0 - cur.end <= SESSION_GAP) {
+      cur.end = s1;
+      cur.kwh += kwh;
+      cur.peakW = Math.max(cur.peakW, pa, pb);
+      cur.estimated ||= est;
+    } else {
+      if (cur) sessions.push(cur);
+      cur = { start: s0, end: s1, kwh, peakW: Math.max(pa, pb), estimated: est };
+    }
+  }
+  if (cur) sessions.push(cur);
+
+  const last = rows.at(-1);
+  const out = sessions
+    .filter((s) => s.kwh >= 0.1 && s.end > start && s.start < end)
+    .map((s) => ({
+      start: Math.round(s.start),
+      end: Math.round(s.end),
+      kwh: Math.round(s.kwh * 100) / 100,
+      avgW: Math.round((s.kwh * WH_MS) / Math.max(s.end - s.start, 60_000)),
+      peakW: Math.round(s.peakW),
+      estimated: s.estimated,
+      ongoing: !!last && s.end === last.ts && (last.power ?? 0) / 10 >= SESSION_HIGH_W,
+      manual: false,
+    }));
+
+  // Recargas do histórico anotado (sem horário), nos dias ainda não cobertos pelas leituras
+  const firstTs = rows.length ? rows[0].ts : Infinity;
+  const { results: man } = await env.DB.prepare(
+    "SELECT date, kwh, note FROM manual_daily WHERE estimated = 0 AND date BETWEEN ? AND ?"
+  )
+    .bind(localDate(start, env), localDate(end - 1, env))
+    .all();
+  for (const m of man) {
+    const ds = dayStart(m.date, env);
+    if (ds >= firstTs) continue; // dia inteiro com leituras: recargas já detectadas
+    // "26,50 + 7,02" → duas recargas; senão uma com o total do dia
+    const parts = /^[\d\s,.+]+$/.test(m.note ?? "")
+      ? m.note.split("+").map((x) => Number(x.trim().replace(",", "."))).filter((x) => x > 0)
+      : [m.kwh];
+    for (const p of parts) {
+      out.push({ start: ds, end: null, kwh: p, avgW: null, peakW: null, estimated: false, ongoing: false, manual: true });
+    }
+  }
+  return out.sort((x, y) => x.start - y.start);
+}
+
+// ---------- Bandeira tarifária por mês ----------
+
+const BANDEIRAS = ["verde", "amarela", "vermelha1", "vermelha2"];
+
+async function getBandeiras(env) {
+  const { results } = await env.DB.prepare("SELECT month, cor FROM bandeiras").all();
+  return Object.fromEntries(results.map((r) => [r.month, r.cor]));
+}
+
+async function setBandeira(env, month, cor) {
+  if (!/^\d{4}-\d{2}$/.test(month ?? "")) throw new Error("use month=AAAA-MM");
+  if (!cor) {
+    await env.DB.prepare("DELETE FROM bandeiras WHERE month = ?").bind(month).run();
+  } else {
+    if (!BANDEIRAS.includes(cor)) throw new Error(`cor inválida (${BANDEIRAS.join(", ")})`);
+    await env.DB.prepare("INSERT OR REPLACE INTO bandeiras (month, cor) VALUES (?, ?)").bind(month, cor).run();
+  }
+  return getBandeiras(env);
 }
 
 // ---------- Atualização do app (APK guardado no KV) ----------

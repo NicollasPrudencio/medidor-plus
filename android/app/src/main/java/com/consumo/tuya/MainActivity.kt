@@ -10,12 +10,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,7 +23,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -37,12 +37,15 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -52,7 +55,6 @@ import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +62,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -74,6 +77,7 @@ import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -84,12 +88,17 @@ private val BRL = NumberFormat.getCurrencyInstance(PT)
 private val DATE_FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy")
 val DAY_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE dd/MM", PT)
 private val TIME_FMT = DateTimeFormatter.ofPattern("dd/MM HH:mm")
+private val MONTH_LABEL = DateTimeFormatter.ofPattern("MMM/yyyy", PT)
 
 fun kwh(v: Double?) = if (v == null) "—" else String.format(PT, "%.2f kWh", v)
-fun money(v: Double?, tariff: Double) = if (v == null) "" else BRL.format(v * tariff)
+fun brl(v: Double?) = if (v == null) "" else BRL.format(v)
 private fun fmtTime(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(TIME_FMT)
 fun startOfDayMs(d: LocalDate) = d.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 private fun pickerDate(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toLocalDate()
+
+/** Número para campo de texto (vírgula decimal; vazio quando zero). */
+private fun fieldNum(v: Double) = if (v == 0.0) "" else v.toString().replace('.', ',')
+private fun parseNum(s: String) = s.trim().replace(',', '.').toDoubleOrNull()
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -108,11 +117,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun App(prefs: Prefs) {
     var showSettings by remember { mutableStateOf(!prefs.configured) }
-    var tariff by remember { mutableDoubleStateOf(prefs.tariff) }
+    var showManual by remember { mutableStateOf(false) }
+    var settingsVersion by remember { mutableIntStateOf(0) }
+    var flags by remember { mutableStateOf<Map<String, Flag>>(emptyMap()) }
     var reload by remember { mutableIntStateOf(0) }
     var now by remember { mutableStateOf<Now?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    val cost = remember(flags, settingsVersion) { prefs.costModel(flags) }
 
     LaunchedEffect(reload) {
         if (!prefs.configured) return@LaunchedEffect
@@ -120,6 +132,7 @@ fun App(prefs: Prefs) {
         error = null
         try {
             now = prefs.api().now()
+            runCatching { prefs.api().flags() }.onSuccess { flags = it }
         } catch (e: Exception) {
             error = e.message ?: e.toString()
         }
@@ -142,7 +155,7 @@ fun App(prefs: Prefs) {
         }
     }
 
-    // Puxar a tela para baixo atualiza tudo (potência, gráficos e verificação de versão)
+    // Puxar a tela para baixo atualiza tudo (potência, gráficos, recargas e verificação de versão)
     PullToRefreshBox(
         isRefreshing = loading,
         onRefresh = { reload++ },
@@ -150,45 +163,50 @@ fun App(prefs: Prefs) {
             .fillMaxSize()
             .safeDrawingPadding(),
     ) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Medidor+", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            TextButton(onClick = { showSettings = true }) { Text("Config") }
-        }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Medidor+", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = { showManual = true }) { Text("Ajuda") }
+                TextButton(onClick = { showSettings = true }) { Text("Config") }
+            }
 
-        error?.let {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                Text(it, Modifier.padding(16.dp))
+            error?.let {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Text(it, Modifier.padding(16.dp))
+                }
+            }
+
+            now?.let { NowCard(it, cost, live) }
+            if (prefs.configured) {
+                SessionsCard(prefs, cost, reload)
+                ChartCard(prefs, cost, reload)
+                PeriodCard(prefs, cost)
             }
         }
-
-        now?.let { NowCard(it, tariff, live) }
-        if (prefs.configured) {
-            ChartCard(prefs, tariff, reload)
-            PeriodCard(prefs, tariff)
-        }
-    }
     }
 
     UpdateGate(prefs, reload)
 
+    if (showManual) ManualScreen(onClose = { showManual = false })
+
     if (showSettings) {
-        SettingsDialog(prefs) {
+        SettingsDialog(prefs, flags, onFlagsChange = { flags = it }) {
             showSettings = false
-            tariff = prefs.tariff
+            settingsVersion++
             reload++
         }
     }
 }
 
 @Composable
-fun NowCard(n: Now, tariff: Double, live: Boolean) {
+fun NowCard(n: Now, cost: CostModel, live: Boolean) {
+    val t = System.currentTimeMillis()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -201,11 +219,17 @@ fun NowCard(n: Now, tariff: Double, live: Boolean) {
             Text("Última leitura: ${fmtTime(n.updatedAt)}", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(12.dp))
             Row {
-                Stat("Hoje", n.todayKwh, n.todayEstimated, tariff, Modifier.weight(1f))
-                Stat("Ontem", n.yesterdayKwh, n.yesterdayEstimated, tariff, Modifier.weight(1f))
+                Stat("Hoje", n.todayKwh, n.todayEstimated, brl(cost.cost(n.todayKwh, t)), Modifier.weight(1f))
+                Stat("Ontem", n.yesterdayKwh, n.yesterdayEstimated, brl(cost.cost(n.yesterdayKwh, t - 86_400_000)), Modifier.weight(1f))
             }
             Spacer(Modifier.height(8.dp))
             Text("Contador do medidor: ${kwh(n.totalKwh)}", style = MaterialTheme.typography.bodySmall)
+            if (cost.detailed) {
+                Text(
+                    "Bandeira ${cost.flagAt(t).label.lowercase()} · ${brl(cost.pricePerKwh(t))}/kWh",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
@@ -237,14 +261,14 @@ fun LiveBadge() {
 }
 
 @Composable
-fun Stat(label: String, v: Double?, estimated: Boolean, tariff: Double, modifier: Modifier = Modifier) {
+fun Stat(label: String, v: Double?, estimated: Boolean, costText: String, modifier: Modifier = Modifier) {
     Column(modifier) {
         Text(label, style = MaterialTheme.typography.labelMedium)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(kwh(v), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             if (estimated && v != null) EstimateIcon()
         }
-        Text(money(v, tariff), style = MaterialTheme.typography.bodySmall)
+        Text(costText, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -268,9 +292,9 @@ fun EstimateIcon() {
             text = {
                 Text(
                     "Faltaram leituras do medidor perto do início ou do fim deste período " +
-                        "(coleta falhou, medidor offline ou sem dados ainda). " +
-                        "O consumo total entre as leituras existentes é exato, mas a parte que cai " +
-                        "dentro do período foi estimada por interpolação linear."
+                        "(coleta falhou, medidor offline ou sem dados ainda), ou o valor do dia foi " +
+                        "estimado a partir do contador do medidor. O consumo total entre as leituras " +
+                        "existentes é exato; a divisão no tempo é uma estimativa."
                 )
             },
             confirmButton = { TextButton(onClick = { open = false }) { Text("Entendi") } },
@@ -280,24 +304,39 @@ fun EstimateIcon() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PeriodCard(prefs: Prefs, tariff: Double) {
+fun PeriodCard(prefs: Prefs, cost: CostModel) {
     val ctx = LocalContext.current
     var open by remember { mutableStateOf(false) }
     var range by remember { mutableStateOf<Pair<LocalDate, LocalDate>?>(null) }
-    var result by remember { mutableStateOf<PeriodKwh?>(null) }
+    var days by remember { mutableStateOf<List<Bucket>?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    val known = days?.filter { it.kwh != null }.orEmpty()
+    val total = known.sumOf { it.kwh!! }
+    val breakdown = known.fold(CostBreakdown.ZERO) { acc, b -> acc + cost.breakdown(b.kwh!!, b.start) }
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Período personalizado", style = MaterialTheme.typography.labelLarge)
             range?.let { (s, e) -> Text("${s.format(DATE_FMT)} a ${e.format(DATE_FMT)}") }
-            result?.kwh?.let {
+            if (known.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(kwh(it), fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                    if (result?.estimated == true) EstimateIcon()
+                    Text(kwh(total), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    if (known.any { it.estimated }) EstimateIcon()
                 }
-                Text(money(it, tariff))
+                Text(brl(breakdown.total), fontWeight = FontWeight.Bold)
+                if (cost.detailed) {
+                    Text(
+                        "Energia ${brl(breakdown.energy)} · Bandeira ${brl(breakdown.flag)} · Impostos ${brl(breakdown.taxes)}" +
+                            (if (breakdown.discount < 0) " · Desconto ${brl(breakdown.discount)}" else ""),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Text(
+                    "${known.size} dias com dados · média ${kwh(total / known.size)}/dia",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -305,17 +344,11 @@ fun PeriodCard(prefs: Prefs, tariff: Double) {
                 Spacer(Modifier.weight(1f))
                 // Exporta o consumo dia a dia do período escolhido
                 range?.let { (s, e) ->
-                    ExportMenu(label = "Exportar dias", enabled = result?.kwh != null) { f ->
-                        scope.launch {
-                            try {
-                                val days = prefs.api().series(startOfDayMs(s), startOfDayMs(e.plusDays(1)), "day")
-                                val name = "medidor-plus_periodo_${s}_a_${e}"
-                                val title = "${s.format(DATE_FMT)} a ${e.format(DATE_FMT)}"
-                                Exporter.share(ctx, energyTable(name, title, "day", days, tariff), f)
-                            } catch (ex: Exception) {
-                                status = ex.message ?: ex.toString()
-                            }
-                        }
+                    ExportMenu(label = "Exportar dias", enabled = known.isNotEmpty()) { f ->
+                        val name = "medidor-plus_periodo_${s}_a_${e}"
+                        val title = "${s.format(DATE_FMT)} a ${e.format(DATE_FMT)}"
+                        runCatching { Exporter.share(ctx, energyTable(name, title, "day", days.orEmpty(), cost), f) }
+                            .onFailure { status = it.message }
                     }
                 }
             }
@@ -334,13 +367,13 @@ fun PeriodCard(prefs: Prefs, tariff: Double) {
                         val e = state.selectedEndDateMillis?.let(::pickerDate) ?: s
                         open = false
                         range = s to e
-                        result = null
+                        days = null
                         status = "Calculando..."
                         scope.launch {
                             try {
-                                val r = prefs.api().period(startOfDayMs(s), startOfDayMs(e.plusDays(1)))
-                                result = r
-                                status = if (r.kwh == null) "Sem leituras nesse período" else null
+                                val r = prefs.api().series(startOfDayMs(s), startOfDayMs(e.plusDays(1)), "day")
+                                days = r
+                                status = if (r.none { it.kwh != null }) "Sem leituras nesse período" else null
                             } catch (ex: Exception) {
                                 status = ex.message ?: ex.toString()
                             }
@@ -356,24 +389,208 @@ fun PeriodCard(prefs: Prefs, tariff: Double) {
 }
 
 @Composable
-fun SettingsDialog(prefs: Prefs, onDone: () -> Unit) {
+fun SettingsDialog(
+    prefs: Prefs,
+    flags: Map<String, Flag>,
+    onFlagsChange: (Map<String, Flag>) -> Unit,
+    onDone: () -> Unit,
+) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf(prefs.url) }
     var token by remember { mutableStateOf(prefs.token) }
     var tariff by remember { mutableStateOf(String.format(PT, "%.4f", prefs.tariff)) }
+    var detailed by remember { mutableStateOf(prefs.detailed) }
+    var te by remember { mutableStateOf(fieldNum(prefs.te)) }
+    var tu by remember { mutableStateOf(fieldNum(prefs.tu)) }
+    var icms by remember { mutableStateOf(fieldNum(prefs.icmsPct)) }
+    var pis by remember { mutableStateOf(fieldNum(prefs.pisPct)) }
+    var cofins by remember { mutableStateOf(fieldNum(prefs.cofinsPct)) }
+    var energyFull by remember { mutableStateOf(fieldNum(prefs.energyFull)) }
+    var energyCharged by remember { mutableStateOf(fieldNum(prefs.energyCharged)) }
+    val flagAdd = remember {
+        mutableStateOf(Flag.entries.filter { it != Flag.VERDE }.associateWith { fieldNum(prefs.flagAdd(it)) })
+    }
+    var showFlagValues by remember { mutableStateOf(false) }
+    var flagError by remember { mutableStateOf<String?>(null) }
     var advanced by remember { mutableStateOf(!prefs.configured) }
+    val decimal = KeyboardOptions(keyboardType = KeyboardType.Decimal)
 
     AlertDialog(
         onDismissRequest = onDone,
         title = { Text("Configurações") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = tariff, onValueChange = { tariff = it }, singleLine = true,
-                    label = { Text("Tarifa (R$/kWh, com impostos)") },
-                    supportingText = { Text("Na conta de luz: valor total ÷ kWh consumidos") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                )
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // ---- Tarifa ----
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Tarifa detalhada", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (detailed) "Tarifa base + bandeira do mês + impostos"
+                            else "Desligada: usa só o valor do kWh",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(checked = detailed, onCheckedChange = { detailed = it })
+                }
+
+                if (!detailed) {
+                    OutlinedTextField(
+                        value = tariff, onValueChange = { tariff = it }, singleLine = true,
+                        label = { Text("Tarifa (R$/kWh, com impostos)") },
+                        supportingText = {
+                            Text(
+                                "Valor da conta ÷ kWh consumidos. Com FIT: Custo de geração FIT ÷ kWh " +
+                                    "(ex.: 461,18 ÷ 503 = 0,9169). Para mais precisão, ligue a tarifa detalhada."
+                            )
+                        },
+                        keyboardOptions = decimal,
+                    )
+                } else {
+                    // Digite os números como estão impressos na fatura — o app faz as contas
+                    Text("Conta de luz (CEEE)", fontWeight = FontWeight.Bold)
+                    Text(
+                        "Tabela \"Itens da Fatura\", última coluna \"Tarifa Unit. (R$)\":",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = te, onValueChange = { te = it }, singleLine = true,
+                            label = { Text("Consumo TE") }, placeholder = { Text("0,343370") },
+                            keyboardOptions = decimal, modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = tu, onValueChange = { tu = it }, singleLine = true,
+                            label = { Text("Consumo TU") }, placeholder = { Text("0,478630") },
+                            keyboardOptions = decimal, modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Text("Quadro \"Tributo\", coluna \"Alíquota (%)\":", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = icms, onValueChange = { icms = it }, singleLine = true,
+                        label = { Text("ICMS (%)") }, placeholder = { Text("17") },
+                        keyboardOptions = decimal, modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = pis, onValueChange = { pis = it }, singleLine = true,
+                        label = { Text("PIS (%)") }, placeholder = { Text("0,4885") },
+                        keyboardOptions = decimal, modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = cofins, onValueChange = { cofins = it }, singleLine = true,
+                        label = { Text("COFINS (%)") }, placeholder = { Text("2,2785") },
+                        keyboardOptions = decimal, modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    Text("Geração compartilhada — opcional (fatura FIT)", fontWeight = FontWeight.Bold)
+                    Text(
+                        "\"Detalhamento da fatura\", coluna Valores (R$). Deixe vazio se não tiver.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = energyFull, onValueChange = { energyFull = it }, singleLine = true,
+                        label = { Text("Preço energia CEEE (R$)") }, placeholder = { Text("524,07") },
+                        supportingText = { Text("O valor riscado") },
+                        keyboardOptions = decimal, modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = energyCharged, onValueChange = { energyCharged = it }, singleLine = true,
+                        label = { Text("Custo de geração própria FIT (R$)") }, placeholder = { Text("461,18") },
+                        keyboardOptions = decimal, modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    // Prévia do resultado, para conferir com a fatura enquanto digita
+                    val preview = CostModel(
+                        detailed = true,
+                        simpleTariff = 0.0,
+                        base = (parseNum(te) ?: 0.0) + (parseNum(tu) ?: 0.0),
+                        icmsPct = parseNum(icms) ?: 0.0,
+                        pisCofinsPct = (parseNum(pis) ?: 0.0) + (parseNum(cofins) ?: 0.0),
+                        discountPct = discountFrom(parseNum(energyFull) ?: 0.0, parseNum(energyCharged) ?: 0.0),
+                        flagAdd = Flag.entries.associateWith { f ->
+                            (if (f == Flag.VERDE) null else parseNum(flagAdd.value[f] ?: "")) ?: f.defaultAdd
+                        },
+                        flags = flags,
+                    )
+                    val nowMs = System.currentTimeMillis()
+                    if (preview.base > 0) {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(
+                                    "Seu kWh: ${String.format(PT, "R$ %.4f", preview.pricePerKwh(nowMs))}",
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                val noDiscount = preview.copy(discountPct = 0.0).pricePerKwh(nowMs)
+                                Text(
+                                    "Bandeira ${preview.flagAt(nowMs).label.lowercase()} · " +
+                                        (if (preview.discountPct > 0)
+                                            String.format(PT, "sem desconto R$ %.4f · desconto %.1f%%", noDiscount, preview.discountPct)
+                                        else "sem desconto"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    } else {
+                        Text(
+                            "Enquanto TE e TU estiverem vazios, o app continua usando a tarifa simples.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+
+                    // Bandeira de cada mês (salva no servidor, vale para todos os aparelhos)
+                    HorizontalDivider()
+                    Text("Bandeira de cada mês", fontWeight = FontWeight.Bold)
+                    Text("Sem seleção = verde. Toque para alterar.", style = MaterialTheme.typography.bodySmall)
+                    val current = YearMonth.now()
+                    (0..5).map { current.minusMonths(it.toLong()) }.forEach { m ->
+                        val key = m.toString()
+                        Text(m.format(MONTH_LABEL).replaceFirstChar { it.uppercase() }, style = MaterialTheme.typography.labelLarge)
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Flag.entries.forEach { f ->
+                                FilterChip(
+                                    selected = flags[key] == f,
+                                    onClick = {
+                                        val newFlag = if (flags[key] == f) null else f
+                                        scope.launch {
+                                            runCatching { prefs.api().setFlag(key, newFlag) }
+                                                .onSuccess { onFlagsChange(it); flagError = null }
+                                                .onFailure { flagError = it.message }
+                                        }
+                                    },
+                                    label = { Text(f.label) },
+                                )
+                            }
+                        }
+                    }
+                    flagError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+
+                    TextButton(onClick = { showFlagValues = !showFlagValues }) {
+                        Text(if (showFlagValues) "Ocultar valores das bandeiras" else "Valores das bandeiras (R$/kWh)")
+                    }
+                    if (showFlagValues) {
+                        Text(
+                            "Adicional sem impostos definido pela ANEEL. Ajuste se a ANEEL mudar os valores.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        flagAdd.value.forEach { (f, v) ->
+                            OutlinedTextField(
+                                value = v,
+                                onValueChange = { nv -> flagAdd.value = flagAdd.value + (f to nv) },
+                                singleLine = true,
+                                label = { Text(f.label) },
+                                keyboardOptions = decimal,
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider()
                 if (BuildConfig.DOWNLOAD_URL.isNotEmpty()) {
                     OutlinedButton(
                         onClick = {
@@ -410,7 +627,16 @@ fun SettingsDialog(prefs: Prefs, onDone: () -> Unit) {
             TextButton(onClick = {
                 prefs.url = url.trim()
                 prefs.token = token.trim()
-                tariff.replace(',', '.').toDoubleOrNull()?.let { prefs.tariff = it }
+                parseNum(tariff)?.let { prefs.tariff = it }
+                prefs.detailed = detailed
+                prefs.te = parseNum(te) ?: 0.0
+                prefs.tu = parseNum(tu) ?: 0.0
+                prefs.icmsPct = parseNum(icms) ?: 0.0
+                prefs.pisPct = parseNum(pis) ?: 0.0
+                prefs.cofinsPct = parseNum(cofins) ?: 0.0
+                prefs.energyFull = parseNum(energyFull) ?: 0.0
+                prefs.energyCharged = parseNum(energyCharged) ?: 0.0
+                flagAdd.value.forEach { (f, v) -> parseNum(v)?.let { prefs.setFlagAdd(f, it) } }
                 onDone()
             }) { Text("Salvar") }
         },

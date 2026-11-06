@@ -118,7 +118,7 @@ private fun stepName(step: String) = when (step) {
 }
 
 @Composable
-fun ChartCard(prefs: Prefs, tariff: Double, reload: Int) {
+fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int) {
     var range by rememberSaveable { mutableStateOf(Range.MONTH) }
     var type by rememberSaveable { mutableStateOf(ChartType.BARS) }
     var measure by rememberSaveable { mutableStateOf(Measure.KWH) }
@@ -196,18 +196,18 @@ fun ChartCard(prefs: Prefs, tariff: Double, reload: Int) {
                     }
                 }
             } else if (buckets.isNotEmpty()) {
-                EnergyChart(buckets, w, type, measure, tariff, selected) { selected = it }
+                EnergyChart(buckets, w, type, measure, cost, selected) { selected = it }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { showList = !showList }) {
                         Text(if (showList) "Ocultar lista" else "Mostrar lista")
                     }
                     Spacer(Modifier.weight(1f))
                     ExportMenu { f ->
-                        val t = energyTable(fileName, w.title, w.step, buckets, tariff)
+                        val t = energyTable(fileName, w.title, w.step, buckets, cost)
                         runCatching { Exporter.share(ctx, t, f) }.onFailure { error = it.message }
                     }
                 }
-                if (showList) BucketList(buckets, w, tariff)
+                if (showList) BucketList(buckets, w, cost)
             }
         }
     }
@@ -219,17 +219,16 @@ private fun EnergyChart(
     w: Window,
     type: ChartType,
     measure: Measure,
-    tariff: Double,
+    cost: CostModel,
     selected: Int?,
     onSelect: (Int?) -> Unit,
 ) {
-    val factor = if (measure == Measure.BRL) tariff else 1.0
-    val raw = buckets.map { it.kwh?.times(factor) }
+    val raw = buckets.map { if (measure == Measure.BRL) cost.cost(it.kwh, it.start) else it.kwh }
     val values = if (type == ChartType.CUMULATIVE) {
         var acc = 0.0
         raw.map { v -> v?.let { acc += it; acc } }
     } else raw
-    val fmt: (Double?) -> String = { v -> if (measure == Measure.BRL) money(v, 1.0) else kwh(v) }
+    val fmt: (Double?) -> String = { v -> if (measure == Measure.BRL) brl(v) else kwh(v) }
 
     val n = buckets.size
     val xs = List(n) { (it + 0.5f) / n }
@@ -313,7 +312,7 @@ private fun PowerChart(points: List<PowerPoint>, w: Window, selected: Int?, onSe
 }
 
 @Composable
-private fun BucketList(buckets: List<Bucket>, w: Window, tariff: Double) {
+private fun BucketList(buckets: List<Bucket>, w: Window, cost: CostModel) {
     Column {
         buckets.asReversed().filter { it.kwh != null }.forEach { b ->
             HorizontalDivider()
@@ -321,7 +320,7 @@ private fun BucketList(buckets: List<Bucket>, w: Window, tariff: Double) {
                 Text(fullLabel(w.step, b.start), Modifier.weight(1f))
                 if (b.estimated) EstimateIcon()
                 Text(kwh(b.kwh))
-                Text(money(b.kwh, tariff), Modifier.width(96.dp), textAlign = TextAlign.End)
+                Text(brl(cost.cost(b.kwh, b.start)), Modifier.width(96.dp), textAlign = TextAlign.End)
             }
         }
     }
