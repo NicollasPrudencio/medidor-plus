@@ -52,7 +52,7 @@ fun openUrl(ctx: Context, url: String) {
 }
 
 /** Data centers da Tuya (código do servidor → nome no portal). */
-private val DATA_CENTERS = listOf(
+val DATA_CENTERS = listOf(
     "us" to "Western America (Brasil)",
     "ueaz" to "Eastern America",
     "eu" to "Central Europe",
@@ -64,7 +64,7 @@ private val DATA_CENTERS = listOf(
 private enum class Step { WELCOME, JOIN, INVITE, MODE, CENTRAL, OWN_GUIDE, OWN_KEYS, OWN_PICK, DETAILS }
 
 /** Passo a passo do portal da Tuya para quem usa projeto próprio. */
-private val OWN_GUIDE = listOf(
+val OWN_GUIDE = listOf(
     "Crie sua conta de desenvolvedor" to listOf(
         "Abra platform.tuya.com e toque em Sign Up. É gratuito.",
         "Dica: faça isso no computador — o portal é mais fácil de usar numa tela grande.",
@@ -179,14 +179,31 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
                 Title("Código de acesso", "Digite o código que recebeu de quem já usa o Medidor+ na sua casa.")
                 CodeField(joinCode, "Código de acesso") { joinCode = it }
                 PrimaryButton("Entrar", busy, joinCode.length >= 8) {
-                    run { finish(api.join(joinCode)) }
+                    run {
+                        if (api.checkCode(joinCode) == "invite") {
+                            // é um convite para cadastrar medidor
+                            invite = joinCode
+                            go(Step.MODE)
+                        } else {
+                            finish(api.join(joinCode))
+                        }
+                    }
                 }
             }
 
             Step.INVITE -> {
                 Title("Código de convite", "Para cadastrar um medidor novo, use o convite enviado pelo administrador do Medidor+.")
                 CodeField(invite, "Código de convite") { invite = it }
-                PrimaryButton("Continuar", false, invite.length >= 8) { go(Step.MODE) }
+                PrimaryButton("Continuar", busy, invite.length >= 8) {
+                    run {
+                        if (api.checkCode(invite) == "share") {
+                            // é um código de acesso a uma casa existente: entra direto
+                            finish(api.join(invite))
+                        } else {
+                            go(Step.MODE)
+                        }
+                    }
+                }
             }
 
             Step.MODE -> {

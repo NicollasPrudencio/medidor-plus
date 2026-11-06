@@ -206,6 +206,7 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
     var msg by remember { mutableStateOf<String?>(null) }
     var showHomes by remember { mutableStateOf(false) }
     var confirmLeave by remember { mutableStateOf(false) }
+    var showSwitch by remember { mutableStateOf(false) }
     var name by remember(home?.id) { mutableStateOf(home?.name ?: "") }
     if (home == null) return
 
@@ -247,6 +248,13 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
         Text("Plano da Tuya: vence em ${fmtIsoDate(home.planExpires)}", style = MaterialTheme.typography.bodyMedium)
         OutlinedButton(onClick = onRenew, modifier = Modifier.fillMaxWidth()) { Text("Renovar / alterar vencimento") }
     }
+    if (!home.own) {
+        OutlinedButton(onClick = { showSwitch = true }, modifier = Modifier.fillMaxWidth()) { Text("Usar meu próprio projeto Tuya") }
+        Text(
+            "Para o dono do medidor não depender do administrador: ele mesmo renova o plano da Tuya. O histórico continua.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
 
     if (home.isAdmin) {
         HorizontalDivider()
@@ -281,6 +289,7 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
     msg?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
     if (showHomes) AdminHomesDialog(prefs) { showHomes = false }
+    if (showSwitch) SwitchToOwnScreen(prefs, home, onClose = { showSwitch = false }, onUpdated = onHome)
     if (confirmLeave) {
         AlertDialog(
             onDismissRequest = { confirmLeave = false },

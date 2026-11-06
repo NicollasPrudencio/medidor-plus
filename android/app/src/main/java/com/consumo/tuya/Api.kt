@@ -166,7 +166,17 @@ class Api(private val baseUrl: String, private val token: String) {
         }
     }
 
+    /** Passa esta casa para o projeto Tuya do próprio usuário (mantém o histórico). */
+    suspend fun switchToOwn(clientId: String, secret: String, dataCenter: String, planExpires: String?): HomeInfo {
+        val body = JSONObject().put("clientId", clientId).put("secret", secret).put("dataCenter", dataCenter)
+        planExpires?.let { body.put("planExpires", it) }
+        return parseHome(JSONObject(request("/api/home/connection", "PUT", body)))
+    }
+
     // ---- Cadastro (sem token) ----
+
+    /** "share" (código de acesso a uma casa) ou "invite" (convite para cadastrar medidor). */
+    suspend fun checkCode(code: String): String = JSONObject(request("/api/codes/check?code=${enc(code)}", "POST")).getString("kind")
 
     /** Entra numa casa existente; devolve o token deste aparelho. */
     suspend fun join(code: String): Pair<String, HomeInfo> {
@@ -353,6 +363,27 @@ class Prefs(ctx: Context) {
 
     private fun double(key: String, def: Double) = sp.getString(key, null)?.toDoubleOrNull() ?: def
     private fun putDouble(key: String, v: Double) = sp.edit().putString(key, v.toString()).apply()
+
+    // ---- Notificações ----
+    var notifyChargeStart: Boolean
+        get() = sp.getBoolean("notifyChargeStart", true)
+        set(v) = sp.edit().putBoolean("notifyChargeStart", v).apply()
+    var notifyChargeEnd: Boolean
+        get() = sp.getBoolean("notifyChargeEnd", true)
+        set(v) = sp.edit().putBoolean("notifyChargeEnd", v).apply()
+
+    /** Estado da última verificação em segundo plano (para detectar início/fim de recarga). */
+    var charging: Boolean
+        get() = sp.getBoolean("charging", false)
+        set(v) = sp.edit().putBoolean("charging", v).apply()
+    var chargeSeenAt: Long
+        get() = sp.getLong("chargeSeenAt", 0L)
+        set(v) = sp.edit().putLong("chargeSeenAt", v).apply()
+
+    /** Último dia (AAAA-MM-DD) em que foi mostrado o aviso de renovação do plano. */
+    var lastPlanNotice: String?
+        get() = sp.getString("lastPlanNotice", null)
+        set(v) = sp.edit().putString("lastPlanNotice", v).apply()
 
     val configured: Boolean get() = url.isNotBlank() && token.isNotBlank()
 

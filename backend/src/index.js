@@ -57,6 +57,7 @@ export default {
     // Rotas públicas do cadastro (protegidas pelos códigos)
     try {
       if (path === "/api/datacenters") return json(DATA_CENTERS);
+      if (path === "/api/codes/check" && req.method === "POST") return json(await checkCodeKind(env, q.get("code")));
       if (path === "/api/join" && req.method === "POST") return json(await joinHome(env, q.get("code")));
       if (path === "/api/register/devices" && req.method === "POST") return json(await registerDevices(env, await req.json()));
       if (path === "/api/register" && req.method === "POST") return json(await registerHome(env, await req.json()));
@@ -87,6 +88,9 @@ export default {
           return json(await setPlan(henv, q.get("expires")));
         case "/api/home/name":
           return json(await setName(henv, q.get("name")));
+        case "/api/home/connection":
+          if (req.method !== "PUT") return json({ error: "use PUT" }, 405);
+          return json(await switchToOwn(henv, await req.json()));
         case "/api/admin/invites":
           admin();
           return json(await createCode(env, "invite", null, 30, 1));
@@ -201,8 +205,9 @@ class TuyaError extends Error {
 }
 
 // Plano gratuito (IoT Core) vencido / serviço não assinado
+// (28841107 = data center desativado e outros 28841xxx NÃO são vencimento)
 const isExpired = (e) =>
-  e instanceof TuyaError && (String(e.code).startsWith("28841") || /expire|subscri/i.test(e.message));
+  e instanceof TuyaError && (String(e.code) === "28841002" || /expired|has expired|trial.*end/i.test(e.message));
 
 /** Credenciais Tuya da casa. */
 async function credsOf(env, h) {
@@ -971,6 +976,50 @@ async function setPlan(env, expires) {
   }
   env.HOME = await loadHome(env, h.id);
   env.HOME.tokenAdmin = h.tokenAdmin;
+  return homeInfo(env);
+}
+
+/** Diz se um código é de acesso (share) ou convite (invite), sem consumi-lo. */
+async function checkCodeKind(env, code) {
+  const c = String(code ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const row = await env.DB.prepare("SELECT kind FROM codes WHERE code = ? AND expires > ? AND uses_left > 0")
+    .bind(c, Date.now())
+    .first();
+  if (!row) throw new Error("Código inválido ou expirado. Confira as letras e números.");
+  return { kind: row.kind };
+}
+
+/**
+ * Passa a casa para o projeto Tuya do próprio usuário (mantém o histórico).
+ * Só funciona se o projeto informado tiver acesso a este medidor — prova de que é do dono.
+ */
+async function switchToOwn(env, body) {
+  const h = env.HOME;
+  const c = regCreds(env, { ...body, mode: "own" });
+  try {
+    await tuya(c, "/v1.0/token?grant_type=1");
+  } catch (e) {
+    throw new Error(`A Tuya recusou o Access ID/Secret (${errMsg(e)}). Confira os valores e o data center.`);
+  }
+  let p;
+  try {
+    p = toMap(await tuyaAuth(env, c, `/v2.0/cloud/thing/${h.device_id}/shadow/properties`));
+  } catch (e) {
+    throw new Error(
+      `O medidor desta casa não aparece no seu projeto (${errMsg(e)}). Confira o passo "Vincule seu app Smart Life".`
+    );
+  }
+  toReading(p, h.codes); // garante que a leitura funciona com o projeto novo
+  const plan = /^\d{4}-\d{2}-\d{2}$/.test(body.planExpires ?? "") ? body.planExpires : null;
+  await env.DB.prepare(
+    `UPDATE homes SET mode = 'own', client_id = ?, secret_enc = ?, base_url = ?, plan_expires = ?,
+       status = 'ok', last_error = NULL, last_ok = ? WHERE id = ?`
+  )
+    .bind(c.id, await encrypt(env, c.secret), c.base, plan, Date.now(), h.id)
+    .run();
+  const ta = h.tokenAdmin;
+  env.HOME = await loadHome(env, h.id);
+  env.HOME.tokenAdmin = ta;
   return homeInfo(env);
 }
 

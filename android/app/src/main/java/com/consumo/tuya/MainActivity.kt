@@ -1,7 +1,12 @@
 package com.consumo.tuya
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.RepeatMode
@@ -101,21 +106,40 @@ private fun fieldNum(v: Double) = if (v == 0.0) "" else v.toString().replace('.'
 private fun parseNum(s: String) = s.trim().replace(',', '.').toDoubleOrNull()
 
 class MainActivity : ComponentActivity() {
+    /** Notificação de plano tocada: abrir direto a tela de renovação. */
+    private val openRenew = mutableStateOf(false)
+
+    private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
+        openRenew.value = intent?.getBooleanExtra(Notifier.EXTRA_OPEN_RENEW, false) == true
+        Notifier.schedule(this)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             val colors = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
             MaterialTheme(colorScheme = colors) {
-                Surface(Modifier.fillMaxSize()) { App(prefs) }
+                Surface(Modifier.fillMaxSize()) {
+                    App(prefs, openRenew.value) { openRenew.value = false }
+                }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(Notifier.EXTRA_OPEN_RENEW, false)) openRenew.value = true
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun App(prefs: Prefs) {
+fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}) {
     var connected by remember { mutableStateOf(prefs.configured) }
     var showSettings by remember { mutableStateOf(false) }
     var showManual by remember { mutableStateOf(false) }
@@ -149,6 +173,15 @@ fun App(prefs: Prefs) {
             if ((e as? ApiException)?.code == "tuya_expired") runCatching { prefs.api().home() }.onSuccess { home = it }
         }
         loading = false
+    }
+
+    // Veio da notificação de plano: abre a renovação assim que a casa carregar
+    LaunchedEffect(openRenew, home) {
+        val h = home
+        if (openRenew && h != null) {
+            if (canRenew(h)) showRenew = true
+            onRenewOpened()
+        }
     }
 
     if (!connected) {
@@ -457,6 +490,8 @@ fun SettingsDialog(
     var showFlagValues by remember { mutableStateOf(false) }
     var flagError by remember { mutableStateOf<String?>(null) }
     var advanced by remember { mutableStateOf(!prefs.configured) }
+    var notifyStart by remember { mutableStateOf(prefs.notifyChargeStart) }
+    var notifyEnd by remember { mutableStateOf(prefs.notifyChargeEnd) }
     val decimal = KeyboardOptions(keyboardType = KeyboardType.Decimal)
 
     AlertDialog(
@@ -635,6 +670,20 @@ fun SettingsDialog(
 
                 HorizontalDivider()
                 HomeSection(prefs, home, onHome = onHome, onRenew = onRenew, onLeave = onLeave)
+                HorizontalDivider()
+                Text("Notificações", fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Carro começou a carregar", Modifier.weight(1f))
+                    Switch(checked = notifyStart, onCheckedChange = { notifyStart = it; prefs.notifyChargeStart = it })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Recarga concluída (com resumo)", Modifier.weight(1f))
+                    Switch(checked = notifyEnd, onCheckedChange = { notifyEnd = it; prefs.notifyChargeEnd = it })
+                }
+                Text(
+                    "Chegam em até ~15 min, mesmo com o app fechado. O aviso de renovação do plano da Tuya é sempre enviado para quem renova.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 HorizontalDivider()
                 TextButton(onClick = { advanced = !advanced }) {
                     Text(if (advanced) "Ocultar avançado" else "Avançado")

@@ -70,6 +70,27 @@ private val MANUAL = listOf(
         ),
     ),
     ManualSection(
+        "Notificações",
+        listOf(
+            "O Medidor+ avisa por notificação, mesmo com o app fechado:",
+            "• 🔌 Carro carregando: quando a potência passa de 1 kW.",
+            "• ✅ Recarga concluída: quando para, com quanto carregou, quanto tempo levou e quanto custou.",
+            "• Plano da Tuya: 7, 3 e 1 dia antes de vencer, no dia e diariamente se vencer — só para quem renova. Tocar na notificação abre o passo a passo de renovação.",
+            "Os avisos chegam em até ~15 minutos (intervalo mínimo do Android para tarefas em segundo plano).",
+            "Na primeira abertura, o Android pergunta se o app pode enviar notificações — toque em Permitir. Para ligar ou desligar os avisos de recarga: Config → Notificações.",
+            "Se as notificações não chegarem: Configurações do Android → Apps → Medidor+ → Notificações (permitir) e Bateria → Sem restrições.",
+        ),
+    ),
+    ManualSection(
+        "Usar meu próprio projeto Tuya (dono do medidor)",
+        listOf(
+            "Se a sua casa foi conectada pelo Smart Life no projeto de outra pessoa (por exemplo, quem instalou o carregador), o plano da Tuya fica com ela. Para não depender dela, use o seu próprio projeto:",
+            "Config → \"Usar meu próprio projeto Tuya\" e siga o passo a passo (conta no portal da Tuya, projeto, vincular o Smart Life, copiar as chaves e a data de vencimento).",
+            "Use o seu e-mail na conta da Tuya, a mesma conta do Smart Life onde o medidor está, e não remova nem reconfigure o medidor no Smart Life.",
+            "O histórico continua igual. A partir daí, o app avisa você quando for preciso renovar.",
+        ),
+    ),
+    ManualSection(
         "Gráficos de consumo",
         listOf(
             "• Dia: consumo hora a hora.",
