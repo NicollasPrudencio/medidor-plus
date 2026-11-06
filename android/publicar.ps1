@@ -3,12 +3,14 @@
 # Uso (na pasta android):
 #   .\publicar.ps1 -Notas "Novos gráficos"            # atualização OBRIGATÓRIA (padrão)
 #   .\publicar.ps1 -Notas "Ajustes" -Opcional          # usuário pode adiar
+#   .\publicar.ps1 -Substituir                         # troca o APK da versão atual, sem avisar ninguém
 #
-# Antes: aumente versionCode (e versionName) em app\build.gradle.kts.
+# Antes (versão nova): aumente versionCode (e versionName) em app\build.gradle.kts.
 
 param(
     [string]$Notas = "",
-    [switch]$Opcional
+    [switch]$Opcional,
+    [switch]$Substituir
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -44,6 +46,7 @@ if (-not (Test-Path $apk)) { throw "APK não encontrado em $apk" }
 
 $force = if ($Opcional) { "false" } else { "true" }
 $query = "versionCode=$code&versionName=$([uri]::EscapeDataString($name))&force=$force&notes=$([uri]::EscapeDataString($Notas))"
+if ($Substituir) { $query += "&replace=true" }
 
 $result = Invoke-RestMethod -Method Put -Uri "$($props.url)/api/admin/apk?$query" `
     -Headers @{ Authorization = "Bearer $($props.adminToken)" } `

@@ -344,6 +344,9 @@ async function downloadApk(env, attachment = false) {
   return new Response(data, { headers });
 }
 
+// Mesmo desenho do ícone do app (android/app/src/main/res/drawable/ic_launcher_*.xml)
+const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="18 18 72 72" width="64" height="64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2F6FDE"/><stop offset="1" stop-color="#1B3F9E"/></linearGradient></defs><rect x="18" y="18" width="72" height="72" rx="18" fill="url(#g)"/><path d="M37.03,70.97 A24,24 0 1,1 70.97,70.97" fill="none" stroke="#fff" stroke-opacity=".28" stroke-width="5" stroke-linecap="round"/><path d="M37.03,70.97 A24,24 0 1,1 73.66,40.23" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M56.5,35 L44,54 L52.5,54 L50,67 L64,46 L55.5,46 L58,35 Z" fill="#FFC83D" stroke="#FFC83D" stroke-width="1.2" stroke-linejoin="round"/><path d="M52,71 h4 v4 h4 v4 h-4 v4 h-4 v-4 h-4 v-4 h4 Z" fill="#fff"/></svg>`;
+
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -367,17 +370,18 @@ async function downloadPage(env) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Medidor+</title>
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(ICON_SVG)}">
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--fg:#14171a;--muted:#5b6470;--accent:#2f6fde;--accent-fg:#fff;--line:#e3e6ea}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--fg:#e8eaed;--muted:#9aa3ad;--accent:#6b9cf5;--accent-fg:#0f1115;--line:#2a2f37}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px}
 main{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px 24px;max-width:420px;width:100%}
-.icon{width:56px;height:56px;border-radius:16px;background:var(--accent);color:var(--accent-fg);display:grid;place-items:center;font-size:28px;margin-bottom:16px}
+.icon{width:64px;height:64px;margin-bottom:16px;display:block}
 h1{font-size:22px;margin:0 0 4px}.meta{color:var(--muted);margin:0 0 16px}.notes{background:var(--bg);border-radius:12px;padding:12px 14px;margin:0 0 20px;white-space:pre-line}
 .btn{display:block;text-align:center;background:var(--accent);color:var(--accent-fg);text-decoration:none;font-weight:600;padding:14px;border-radius:12px;margin-bottom:20px}
 ol{padding-left:20px;margin:0 0 16px;color:var(--fg)}li{margin-bottom:8px}.foot{color:var(--muted);font-size:14px;margin:0}
 </style></head><body><main>
-<div class="icon">⚡</div>
+<div class="icon">${ICON_SVG}</div>
 <h1>Medidor+</h1>
 ${body}
 </main></body></html>`;
@@ -389,7 +393,9 @@ async function publishApk(env, req, q) {
   const versionCode = Number(q.get("versionCode"));
   if (!Number.isInteger(versionCode) || versionCode < 1) throw new Error("versionCode inválido");
   const prev = await appVersion(env);
-  if (versionCode <= prev.versionCode) {
+  // replace=true: substitui a versão publicada com o mesmo versionCode (sem disparar atualização)
+  const replace = q.get("replace") === "true" && versionCode === prev.versionCode;
+  if (versionCode <= prev.versionCode && !replace) {
     throw new Error(`versionCode ${versionCode} precisa ser maior que o publicado (${prev.versionCode})`);
   }
   const data = await req.arrayBuffer();

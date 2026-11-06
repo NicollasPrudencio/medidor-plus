@@ -4,7 +4,17 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -114,12 +124,15 @@ fun App(prefs: Prefs) {
         loading = false
     }
 
-    // Atualiza "Agora" a cada 30 s só enquanto o app está visível (pausa em segundo plano).
+    // Atualiza "Agora" só enquanto o app está visível (pausa em segundo plano):
+    // a cada 5 s com consumo alto (ex.: carro carregando), senão a cada 30 s.
+    val live = (now?.powerW ?: 0.0) >= LIVE_THRESHOLD_W
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
-                delay(30_000)
+                val fast = (now?.powerW ?: 0.0) >= LIVE_THRESHOLD_W
+                delay(if (fast) 5_000 else 30_000)
                 if (prefs.configured && !loading) {
                     runCatching { prefs.api().now() }.onSuccess { now = it; error = null }
                 }
@@ -147,7 +160,7 @@ fun App(prefs: Prefs) {
             }
         }
 
-        now?.let { NowCard(it, tariff) }
+        now?.let { NowCard(it, tariff, live) }
         if (prefs.configured) {
             ChartCard(prefs, tariff, reload)
             PeriodCard(prefs, tariff)
@@ -166,10 +179,14 @@ fun App(prefs: Prefs) {
 }
 
 @Composable
-fun NowCard(n: Now, tariff: Double) {
+fun NowCard(n: Now, tariff: Double, live: Boolean) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
-            Text("Agora", style = MaterialTheme.typography.labelLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Agora", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                if (live) LiveBadge()
+                else Text("atualiza a cada 30 s", style = MaterialTheme.typography.labelSmall)
+            }
             Text(String.format(PT, "%.0f W", n.powerW), fontSize = 36.sp, fontWeight = FontWeight.Bold)
             Text(String.format(PT, "%.1f V · %.2f A", n.voltageV, n.currentA))
             Text("Última leitura: ${fmtTime(n.updatedAt)}", style = MaterialTheme.typography.bodySmall)
@@ -181,6 +198,32 @@ fun NowCard(n: Now, tariff: Double) {
             Spacer(Modifier.height(8.dp))
             Text("Contador do medidor: ${kwh(n.totalKwh)}", style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+/** Potência a partir da qual o app entra em modo "ao vivo" (atualiza a cada 5 s). */
+const val LIVE_THRESHOLD_W = 1500.0
+
+/** Indicador pulsante "● Ao vivo". */
+@Composable
+fun LiveBadge() {
+    val pulse = rememberInfiniteTransition(label = "live")
+    val alpha by pulse.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+        label = "alpha",
+    )
+    val color = MaterialTheme.colorScheme.error
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .alpha(alpha)
+                .background(color, CircleShape)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text("Ao vivo · 5 s", style = MaterialTheme.typography.labelMedium, color = color, fontWeight = FontWeight.Bold)
     }
 }
 
