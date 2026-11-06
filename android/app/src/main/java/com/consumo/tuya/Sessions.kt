@@ -59,26 +59,26 @@ private data class DaySessions(val date: LocalDate, val sessions: List<Session>,
 }
 
 @Composable
-fun SessionsCard(prefs: Prefs, cost: CostModel, reload: Int) {
+fun SessionsCard(prefs: Prefs, cost: CostModel, reload: Int, anchor: LocalDate, onAnchor: (LocalDate) -> Unit) {
     val ctx = LocalContext.current
-    var offset by remember { mutableIntStateOf(0) }
+    var picking by remember { mutableStateOf(false) }
     var measure by rememberSaveable { mutableStateOf(Measure.KWH) }
     var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var openDay by remember(offset) { mutableStateOf<LocalDate?>(null) }
-    var selected by remember(offset, measure) { mutableStateOf<Int?>(null) }
-
-    val month = YearMonth.now().plusMonths(offset.toLong())
+    val month = YearMonth.from(anchor)
+    var openDay by remember(month) { mutableStateOf<LocalDate?>(null) }
+    var selected by remember(month, measure) { mutableStateOf<Int?>(null) }
     val startMs = startOfDayMs(month.atDay(1))
     val endMs = startOfDayMs(month.plusMonths(1).atDay(1))
 
-    LaunchedEffect(offset, reload) {
+    LaunchedEffect(month, reload) {
         loading = true
         error = null
         try {
             sessions = prefs.api().sessions(startMs, endMs)
         } catch (e: Exception) {
+            e.rethrowIfCancelled() // troca de mês: não é erro
             error = e.message ?: e.toString()
         }
         loading = false
@@ -94,16 +94,13 @@ fun SessionsCard(prefs: Prefs, cost: CostModel, reload: Int) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Recargas", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { offset-- }) { Text("‹", fontSize = 22.sp) }
-                Text(
-                    month.format(MONTH_TITLE).replaceFirstChar { it.uppercase() },
-                    Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
-                    fontWeight = FontWeight.Bold,
-                )
-                TextButton(onClick = { offset++ }, enabled = offset < 0) { Text("›", fontSize = 22.sp) }
-            }
+            PeriodNav(
+                title = month.format(MONTH_TITLE),
+                canForward = canGoForward(Range.MONTH, anchor),
+                onPrev = { onAnchor(shiftAnchor(Range.MONTH, anchor, -1)) },
+                onNext = { onAnchor(shiftAnchor(Range.MONTH, anchor, 1)) },
+                onPick = { picking = true },
+            )
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Measure.entries.forEach { m ->
                     FilterChip(selected = measure == m, onClick = { measure = m }, label = { Text(m.label) })
@@ -113,9 +110,7 @@ fun SessionsCard(prefs: Prefs, cost: CostModel, reload: Int) {
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (loading) Text("Carregando...", style = MaterialTheme.typography.bodySmall)
 
-            if (!loading && sessions.isEmpty() && error == null) {
-                Text("Nenhuma recarga neste mês.", style = MaterialTheme.typography.bodySmall)
-            }
+            if (!loading && sessions.isEmpty() && error == null) EmptyPeriod()
 
             if (sessions.isNotEmpty()) {
                 // Resumo do mês
@@ -200,6 +195,15 @@ fun SessionsCard(prefs: Prefs, cost: CostModel, reload: Int) {
                 }
             }
         }
+    }
+
+    if (picking) {
+        MonthYearPicker(
+            initial = month,
+            showMonths = true,
+            onPick = { picking = false; onAnchor(anchorFor(it)) },
+            onDismiss = { picking = false },
+        )
     }
 }
 

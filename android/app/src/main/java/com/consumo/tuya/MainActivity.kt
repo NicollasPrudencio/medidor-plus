@@ -146,6 +146,12 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
     var showRenew by remember { mutableStateOf(false) }
     var showSwitch by remember { mutableStateOf(false) }
     var home by remember { mutableStateOf<HomeInfo?>(null) }
+    // Período em exibição (compartilhado por gráficos e recargas); o ano fica salvo, o mês não
+    var anchor by remember { mutableStateOf(initialAnchor(prefs)) }
+    val setAnchor: (LocalDate) -> Unit = {
+        anchor = it
+        prefs.selYear = it.year
+    }
     var settingsVersion by remember { mutableIntStateOf(0) }
     var flags by remember { mutableStateOf<Map<String, Flag>>(emptyMap()) }
     var reload by remember { mutableIntStateOf(0) }
@@ -178,6 +184,7 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
             now = prefs.api().now()
             runCatching { prefs.api().flags() }.onSuccess { flags = it }
         } catch (e: Exception) {
+            e.rethrowIfCancelled()
             error = e.message ?: e.toString()
             // plano vencido: atualiza o status da casa para mostrar o aviso certo
             if ((e as? ApiException)?.code == "tuya_expired") runCatching { prefs.api().home() }.onSuccess { home = it }
@@ -269,8 +276,8 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
 
             now?.let { NowCard(it, cost, live) }
             run {
-                SessionsCard(prefs, cost, reload)
-                ChartCard(prefs, cost, reload)
+                SessionsCard(prefs, cost, reload, anchor, setAnchor)
+                ChartCard(prefs, cost, reload, anchor, setAnchor)
                 PeriodCard(prefs, cost)
             }
         }

@@ -60,28 +60,24 @@ data class Window(val startMs: Long, val endMs: Long, val step: String, val titl
 
 private val SHORT_DATE = DateTimeFormatter.ofPattern("dd/MM")
 private val MONTH_TITLE = DateTimeFormatter.ofPattern("MMMM yyyy", PT)
+private val SHORT_DATE_YEAR = DateTimeFormatter.ofPattern("dd/MM/yy")
+private val DAY_FMT_YEAR = DateTimeFormatter.ofPattern("EEE dd/MM/yyyy", PT)
 
-fun window(range: Range, offset: Int): Window {
-    val today = LocalDate.now()
-    val k = offset.toLong()
-    return when (range) {
-        Range.DAY, Range.POWER -> {
-            val d = today.plusDays(k)
-            Window(startOfDayMs(d), startOfDayMs(d.plusDays(1)), "hour", d.format(DAY_FMT))
-        }
-        Range.WEEK -> {
-            val e = today.plusWeeks(k)
-            val s = e.minusDays(6)
-            Window(startOfDayMs(s), startOfDayMs(e.plusDays(1)), "day", "${s.format(SHORT_DATE)} – ${e.format(SHORT_DATE)}")
-        }
-        Range.MONTH -> {
-            val m = YearMonth.now().plusMonths(k)
-            Window(startOfDayMs(m.atDay(1)), startOfDayMs(m.plusMonths(1).atDay(1)), "day", m.format(MONTH_TITLE))
-        }
-        Range.YEAR -> {
-            val y = today.year + offset
-            Window(startOfDayMs(LocalDate.of(y, 1, 1)), startOfDayMs(LocalDate.of(y + 1, 1, 1)), "month", "$y")
-        }
+/** Janela exibida para a data de referência [anchor] (dia, semana até ela, mês ou ano dela). */
+fun window(range: Range, anchor: LocalDate): Window = when (range) {
+    Range.DAY, Range.POWER ->
+        Window(startOfDayMs(anchor), startOfDayMs(anchor.plusDays(1)), "hour", anchor.format(DAY_FMT_YEAR))
+    Range.WEEK -> {
+        val s = anchor.minusDays(6)
+        Window(startOfDayMs(s), startOfDayMs(anchor.plusDays(1)), "day", "${s.format(SHORT_DATE)} – ${anchor.format(SHORT_DATE_YEAR)}")
+    }
+    Range.MONTH -> {
+        val m = YearMonth.from(anchor)
+        Window(startOfDayMs(m.atDay(1)), startOfDayMs(m.plusMonths(1).atDay(1)), "day", m.format(MONTH_TITLE))
+    }
+    Range.YEAR -> {
+        val y = anchor.year
+        Window(startOfDayMs(LocalDate.of(y, 1, 1)), startOfDayMs(LocalDate.of(y + 1, 1, 1)), "month", "$y")
     }
 }
 
@@ -118,21 +114,21 @@ private fun stepName(step: String) = when (step) {
 }
 
 @Composable
-fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int) {
+fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int, anchor: LocalDate, onAnchor: (LocalDate) -> Unit) {
     var range by rememberSaveable { mutableStateOf(Range.MONTH) }
     var type by rememberSaveable { mutableStateOf(ChartType.BARS) }
     var measure by rememberSaveable { mutableStateOf(Measure.KWH) }
-    var offset by remember(range) { mutableIntStateOf(0) }
+    var picking by remember { mutableStateOf(false) }
     var buckets by remember { mutableStateOf<List<Bucket>>(emptyList()) }
     var power by remember { mutableStateOf<List<PowerPoint>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showList by rememberSaveable { mutableStateOf(false) }
-    var selected by remember(range, offset, type, measure) { mutableStateOf<Int?>(null) }
-    val w = window(range, offset)
+    val w = window(range, anchor)
+    var selected by remember(range, w.startMs, type, measure) { mutableStateOf<Int?>(null) }
     val ctx = LocalContext.current
 
-    LaunchedEffect(range, offset, reload) {
+    LaunchedEffect(range, w.startMs, reload) {
         loading = true
         error = null
         buckets = emptyList()
@@ -141,6 +137,7 @@ fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int) {
             if (range == Range.POWER) power = prefs.api().power(w.startMs, w.endMs)
             else buckets = prefs.api().series(w.startMs, w.endMs, w.step)
         } catch (e: Exception) {
+            e.rethrowIfCancelled() // troca de período: não é erro
             error = e.message ?: e.toString()
         }
         loading = false
@@ -155,16 +152,13 @@ fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int) {
                 }
             }
             // Navegação
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { offset-- }) { Text("‹", fontSize = 22.sp) }
-                Text(
-                    w.title.replaceFirstChar { it.uppercase() },
-                    Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
-                    fontWeight = FontWeight.Bold,
-                )
-                TextButton(onClick = { offset++ }, enabled = offset < 0) { Text("›", fontSize = 22.sp) }
-            }
+            PeriodNav(
+                title = w.title,
+                canForward = canGoForward(range, anchor),
+                onPrev = { onAnchor(shiftAnchor(range, anchor, -1)) },
+                onNext = { onAnchor(shiftAnchor(range, anchor, 1)) },
+                onPick = { picking = true },
+            )
             // Tipo e unidade
             if (range != Range.POWER) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -182,7 +176,11 @@ fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int) {
             if (loading) Text("Carregando...", style = MaterialTheme.typography.bodySmall)
 
             val fileName = "medidor-plus_${range.name.lowercase()}_${fileDate(w.startMs)}"
-            if (range == Range.POWER) {
+            val empty = !loading && error == null &&
+                (if (range == Range.POWER) power.isEmpty() else buckets.none { it.kwh != null })
+            if (empty) {
+                EmptyPeriod()
+            } else if (range == Range.POWER) {
                 PowerChart(power, w, selected) { selected = it }
                 if (power.isNotEmpty()) {
                     ExportMenu { f ->
@@ -195,7 +193,7 @@ fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int) {
                         runCatching { Exporter.share(ctx, t, f) }.onFailure { error = it.message }
                     }
                 }
-            } else if (buckets.isNotEmpty()) {
+            } else if (buckets.any { it.kwh != null }) {
                 EnergyChart(buckets, w, type, measure, cost, selected) { selected = it }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { showList = !showList }) {
@@ -209,6 +207,22 @@ fun ChartCard(prefs: Prefs, cost: CostModel, reload: Int) {
                 }
                 if (showList) BucketList(buckets, w, cost)
             }
+        }
+    }
+
+    if (picking) {
+        when (range) {
+            Range.MONTH, Range.YEAR -> MonthYearPicker(
+                initial = YearMonth.from(anchor),
+                showMonths = range == Range.MONTH,
+                onPick = { picking = false; onAnchor(anchorFor(it)) },
+                onDismiss = { picking = false },
+            )
+            else -> DayPicker(
+                initial = anchor,
+                onPick = { picking = false; onAnchor(it) },
+                onDismiss = { picking = false },
+            )
         }
     }
 }

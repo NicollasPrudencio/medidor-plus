@@ -399,6 +399,11 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("chargeSeenAt", 0L)
         set(v) = sp.edit().putLong("chargeSeenAt", v).apply()
 
+    /** Ano escolhido por último nos gráficos/recargas (o app reabre nele; 0 = ano atual). */
+    var selYear: Int
+        get() = sp.getInt("selYear", 0)
+        set(v) = sp.edit().putInt("selYear", v).apply()
+
     /** Último dia (AAAA-MM-DD) em que foi mostrado o aviso de renovação do plano. */
     var lastPlanNotice: String?
         get() = sp.getString("lastPlanNotice", null)
