@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -129,6 +130,7 @@ fun ChartCard(prefs: Prefs, tariff: Double, reload: Int) {
     var showList by rememberSaveable { mutableStateOf(false) }
     var selected by remember(range, offset, type, measure) { mutableStateOf<Int?>(null) }
     val w = window(range, offset)
+    val ctx = LocalContext.current
 
     LaunchedEffect(range, offset, reload) {
         loading = true
@@ -179,12 +181,31 @@ fun ChartCard(prefs: Prefs, tariff: Double, reload: Int) {
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (loading) Text("Carregando...", style = MaterialTheme.typography.bodySmall)
 
+            val fileName = "medidor-plus_${range.name.lowercase()}_${fileDate(w.startMs)}"
             if (range == Range.POWER) {
                 PowerChart(power, w, selected) { selected = it }
+                if (power.isNotEmpty()) {
+                    ExportMenu { f ->
+                        val t = ExportTable(
+                            fileName = fileName,
+                            title = "Potência — ${w.title}",
+                            cols = listOf(Col("Data/hora", ColFmt.TEXT), Col("Potência (W)", ColFmt.WATT)),
+                            rows = power.map { listOf(fmtDateTime(it.ts), it.w) },
+                        )
+                        runCatching { Exporter.share(ctx, t, f) }.onFailure { error = it.message }
+                    }
+                }
             } else if (buckets.isNotEmpty()) {
                 EnergyChart(buckets, w, type, measure, tariff, selected) { selected = it }
-                TextButton(onClick = { showList = !showList }) {
-                    Text(if (showList) "Ocultar lista" else "Mostrar lista")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { showList = !showList }) {
+                        Text(if (showList) "Ocultar lista" else "Mostrar lista")
+                    }
+                    Spacer(Modifier.weight(1f))
+                    ExportMenu { f ->
+                        val t = energyTable(fileName, w.title, w.step, buckets, tariff)
+                        runCatching { Exporter.share(ctx, t, f) }.onFailure { error = it.message }
+                    }
                 }
                 if (showList) BucketList(buckets, w, tariff)
             }

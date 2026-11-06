@@ -272,6 +272,7 @@ fun EstimateIcon() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PeriodCard(prefs: Prefs, tariff: Double) {
+    val ctx = LocalContext.current
     var open by remember { mutableStateOf(false) }
     var range by remember { mutableStateOf<Pair<LocalDate, LocalDate>?>(null) }
     var result by remember { mutableStateOf<PeriodKwh?>(null) }
@@ -290,7 +291,25 @@ fun PeriodCard(prefs: Prefs, tariff: Double) {
                 Text(money(it, tariff))
             }
             status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            Button(onClick = { open = true }) { Text("Escolher período") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { open = true }) { Text("Escolher período") }
+                Spacer(Modifier.weight(1f))
+                // Exporta o consumo dia a dia do período escolhido
+                range?.let { (s, e) ->
+                    ExportMenu(label = "Exportar dias", enabled = result?.kwh != null) { f ->
+                        scope.launch {
+                            try {
+                                val days = prefs.api().series(startOfDayMs(s), startOfDayMs(e.plusDays(1)), "day")
+                                val name = "medidor-plus_periodo_${s}_a_${e}"
+                                val title = "${s.format(DATE_FMT)} a ${e.format(DATE_FMT)}"
+                                Exporter.share(ctx, energyTable(name, title, "day", days, tariff), f)
+                            } catch (ex: Exception) {
+                                status = ex.message ?: ex.toString()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
