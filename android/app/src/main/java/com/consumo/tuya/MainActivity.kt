@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -103,6 +104,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App(prefs: Prefs) {
     var showSettings by remember { mutableStateOf(!prefs.configured) }
@@ -140,17 +142,23 @@ fun App(prefs: Prefs) {
         }
     }
 
+    // Puxar a tela para baixo atualiza tudo (potência, gráficos e verificação de versão)
+    PullToRefreshBox(
+        isRefreshing = loading,
+        onRefresh = { reload++ },
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+    ) {
     Column(
         Modifier
             .fillMaxSize()
-            .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Medidor+", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            TextButton(onClick = { reload++ }, enabled = !loading) { Text(if (loading) "..." else "Atualizar") }
             TextButton(onClick = { showSettings = true }) { Text("Config") }
         }
 
@@ -165,6 +173,7 @@ fun App(prefs: Prefs) {
             ChartCard(prefs, tariff, reload)
             PeriodCard(prefs, tariff)
         }
+    }
     }
 
     UpdateGate(prefs, reload)

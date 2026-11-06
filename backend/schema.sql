@@ -6,6 +6,15 @@ CREATE TABLE IF NOT EXISTS readings (
   voltage INTEGER              -- v em décimos de V
 );
 
+-- Consumo diário anotado manualmente (antes do medidor ser integrado).
+-- Usado nos dias sem leituras; no dia em que as leituras começam, soma com o medido depois.
+CREATE TABLE IF NOT EXISTS manual_daily (
+  date      TEXT PRIMARY KEY, -- AAAA-MM-DD (horário de Brasília)
+  kwh       REAL NOT NULL,
+  estimated INTEGER NOT NULL DEFAULT 0, -- 1 = valor estimado (exibe ⓘ)
+  note      TEXT
+);
+
 -- Cache do token da Tuya
 CREATE TABLE IF NOT EXISTS meta (
   key     TEXT PRIMARY KEY,

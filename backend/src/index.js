@@ -225,6 +225,55 @@ function consumption(s, start, end) {
   };
 }
 
+// ---------- Consumo diário manual (histórico anotado antes do medidor ser integrado) ----------
+
+async function loadManual(env, start, end) {
+  const { results } = await env.DB.prepare(
+    "SELECT date, kwh, estimated FROM manual_daily WHERE date BETWEEN ? AND ?"
+  )
+    .bind(localDate(start, env), localDate(end - 1, env))
+    .all();
+  return Object.fromEntries(results.map((r) => [r.date, r]));
+}
+
+// Consumo do dia local [ds, de): leituras automáticas + valor manual do período antes da 1ª leitura.
+function dayConsumption(s, ds, de, manual, env) {
+  if (de <= ds) return null;
+  const c = consumption(s, ds, de);
+  const m = manual[localDate(ds, env)];
+  if (!m) return c;
+  const first = s.ts.length ? s.ts[0] : Infinity;
+  if (first <= ds) return c; // dia inteiro coberto pelas leituras: o medido prevalece
+  const partial = first < de; // leituras começam no meio do dia: soma as duas partes
+  return {
+    kwh: Math.round((m.kwh + (partial ? c?.kwh ?? 0 : 0)) * 100) / 100,
+    estimated: !!m.estimated || (partial && isEstimated(s.ts, de)),
+    manual: true,
+  };
+}
+
+const dayFloor = (t, env) => dayStart(localDate(t, env), env);
+
+// Soma por dia local entre start e end (pedaços de dia incompletos usam só as leituras).
+function rangeConsumption(s, start, end, manual, env) {
+  let kwh = 0;
+  let any = false;
+  let estimated = false;
+  let man = false;
+  for (let d = dayFloor(start, env); d < end; d += DAY) {
+    const a = Math.max(d, start);
+    const b = Math.min(d + DAY, end);
+    if (b <= a) continue;
+    const c = a === d ? dayConsumption(s, a, b, manual, env) : consumption(s, a, b);
+    if (!c) continue;
+    kwh += c.kwh;
+    any = true;
+    estimated ||= c.estimated;
+    man ||= !!c.manual;
+  }
+  return any ? { kwh: Math.round(kwh * 100) / 100, estimated, manual: man } : null;
+}
+
 // ---------- Endpoints ----------
 
 async function now(env) {
@@ -233,10 +282,11 @@ async function now(env) {
   await insertReading(env, r); // aproveita a consulta para gravar mais uma leitura
 
   const t = Date.now();
-  const today = dayStart(localDate(t, env), env);
+  const today = dayFloor(t, env);
   const s = series(await loadRows(env, today - DAY, t));
-  const td = consumption(s, today, t);
-  const yd = consumption(s, today - DAY, today);
+  const manual = await loadManual(env, today - DAY, t);
+  const td = dayConsumption(s, today, t, manual, env);
+  const yd = dayConsumption(s, today - DAY, today, manual, env);
   return {
     powerW: r.power / 10,
     voltageV: (r.voltage ?? 0) / 10,
@@ -258,11 +308,17 @@ async function daily(env, from, to) {
   if (end <= start || end - start > 400 * DAY) throw new Error("intervalo inválido (máx. 400 dias)");
 
   const s = series(await loadRows(env, start, end));
+  const manual = await loadManual(env, start, end);
   const t = Date.now();
   const days = [];
   for (let d = start; d < end; d += DAY) {
-    const c = consumption(s, d, Math.min(d + DAY, t));
-    days.push({ date: localDate(d, env), kwh: c?.kwh ?? null, estimated: c?.estimated ?? false });
+    const c = dayConsumption(s, d, Math.min(d + DAY, t), manual, env);
+    days.push({
+      date: localDate(d, env),
+      kwh: c?.kwh ?? null,
+      estimated: c?.estimated ?? false,
+      manual: c?.manual ?? false,
+    });
   }
   return days;
 }
@@ -272,8 +328,9 @@ async function period(env, start, end) {
     throw new Error("use start e end em milissegundos (epoch)");
   }
   const s = series(await loadRows(env, start, end));
-  const c = consumption(s, start, Math.min(end, Date.now()));
-  return { start, end, kwh: c?.kwh ?? null, estimated: c?.estimated ?? false };
+  const manual = await loadManual(env, start, end);
+  const c = rangeConsumption(s, start, Math.min(end, Date.now()), manual, env);
+  return { start, end, kwh: c?.kwh ?? null, estimated: c?.estimated ?? false, manual: c?.manual ?? false };
 }
 
 // Consumo agrupado: step = hour | day | week | month (meses respeitam o calendário local).
@@ -282,13 +339,15 @@ async function seriesApi(env, start, end, step) {
     throw new Error("use start e end em milissegundos (epoch)");
   }
   const s = series(await loadRows(env, start, end));
+  const manual = step === "hour" ? {} : await loadManual(env, start, end);
   const t = Date.now();
   const out = [];
   for (let b = start; b < end && out.length < 400; ) {
     const next = nextBoundary(b, step, env);
     const stop = Math.min(next, end, t);
-    const c = stop > b ? consumption(s, b, stop) : null;
-    out.push({ start: b, kwh: c?.kwh ?? null, estimated: c?.estimated ?? false });
+    // por hora só existem leituras automáticas; dia/semana/mês incluem o histórico manual
+    const c = stop <= b ? null : step === "hour" ? consumption(s, b, stop) : rangeConsumption(s, b, stop, manual, env);
+    out.push({ start: b, kwh: c?.kwh ?? null, estimated: c?.estimated ?? false, manual: c?.manual ?? false });
     b = next;
   }
   return out;
