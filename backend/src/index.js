@@ -901,9 +901,6 @@ async function registerHome(env, body) {
   if (!/^[a-z0-9]{10,32}$/i.test(deviceId)) throw new Error("ID do aparelho inválido.");
   const name = String(body.name ?? "").trim().slice(0, 40) || "Minha casa";
 
-  const exists = await env.DB.prepare("SELECT id FROM homes WHERE device_id = ?").bind(deviceId).first();
-  if (exists) throw new Error("Este medidor já está cadastrado. Peça o código de acesso a quem já usa.");
-
   let props;
   try {
     props = await modelProps(env, c, deviceId);
@@ -922,6 +919,26 @@ async function registerHome(env, body) {
   const reading = toReading(p, codes);
 
   const plan = /^\d{4}-\d{2}-\d{2}$/.test(body.planExpires ?? "") ? body.planExpires : null;
+
+  // Medidor já cadastrado: como a conta Tuya informada tem acesso a ele (prova de que é o dono),
+  // a pessoa assume a casa existente — com todo o histórico — e passa a ser a responsável.
+  const exists = await env.DB.prepare("SELECT id FROM homes WHERE device_id = ?").bind(deviceId).first();
+  if (exists) {
+    await env.DB.prepare(
+      `UPDATE homes SET mode = 'own', client_id = ?, secret_enc = ?, base_url = ?, plan_expires = ?,
+         name = COALESCE(?, name), status = 'ok', last_error = NULL, last_ok = ? WHERE id = ?`
+    )
+      .bind(c.id, await encrypt(env, c.secret), c.base, plan, body.name ? name : null, Date.now(), exists.id)
+      .run();
+    await env.DB.prepare("UPDATE home_tokens SET is_owner = 0 WHERE home_id = ?").bind(exists.id).run();
+    await useCode(env, invite.code);
+    await insertReading(env, exists.id, reading);
+    const token = await newToken(env, exists.id, false, true);
+    const claimed = await loadHome(env, exists.id);
+    claimed.tokenOwner = true;
+    return { token, claimed: true, home: await homeInfo(Object.assign(Object.create(env), { HOME: claimed })) };
+  }
+
   const id = randomCode(10).toLowerCase();
   await env.DB.prepare(
     `INSERT INTO homes (id, name, mode, client_id, secret_enc, base_url, device_id, codes, plan_expires,
