@@ -1,0 +1,16 @@
+node_modules/
+.wrangler/
+.dev.vars
+
+# Android — chave de assinatura e tokens (FAÇA BACKUP do keystore fora do git)
+android/keystore/
+android/keystore.properties
+android/publish.properties
+
+# Android
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/

@@ -1,0 +1,27 @@
+name = "consumo-tuya"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Coleta a cada 10 minutos (o contador é acumulado, então falhas não perdem energia)
+[triggers]
+crons = ["*/10 * * * *"]
+
+[vars]
+TUYA_DEVICE_ID = "eb4291e1fb5b634beemdow"
+TZ_OFFSET_MIN = "-180" # Brasília (UTC-3)
+
+[[d1_databases]]
+binding = "DB"
+database_name = "consumo-tuya"
+database_id = "f254bb52-16ca-4156-a1da-4c8667711d19"
+
+# APK do app para atualização automática
+[[kv_namespaces]]
+binding = "APK"
+id = "94279eb1de9840e8b3547f3b01fd4612"
+
+# Secrets (não ficam neste arquivo) — configure com:
+#   npx wrangler secret put TUYA_CLIENT_ID
+#   npx wrangler secret put TUYA_CLIENT_SECRET
+#   npx wrangler secret put APP_TOKEN
+#   npx wrangler secret put ADMIN_TOKEN   (usado pelo android/publicar.ps1)
