@@ -118,6 +118,13 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
         error = null
         step = s
     }
+    // Medidor novo sempre usa o projeto Tuya do próprio dono: ele renova o próprio plano,
+    // sem depender de ninguém (quem compartilha a casa depende só do dono dela).
+    fun startOwn() {
+        mode = "own"
+        guidePage = 0
+        go(Step.OWN_GUIDE)
+    }
     fun finish(r: Pair<String, HomeInfo>) {
         prefs.token = r.first
         onDone(r.second)
@@ -149,7 +156,7 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
                     when (step) {
                         Step.JOIN, Step.INVITE -> Step.WELCOME
                         Step.MODE -> Step.INVITE
-                        Step.CENTRAL, Step.OWN_GUIDE -> Step.MODE
+                        Step.CENTRAL, Step.OWN_GUIDE -> Step.INVITE
                         Step.OWN_KEYS -> Step.OWN_GUIDE
                         Step.OWN_PICK -> Step.OWN_KEYS
                         Step.DETAILS -> if (mode == "central") Step.CENTRAL else Step.OWN_PICK
@@ -171,7 +178,7 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
                 ) { go(Step.JOIN) }
                 ChoiceCard(
                     "Cadastrar o meu medidor",
-                    "Primeira vez com o seu medidor. Você vai precisar do código de convite do administrador do Medidor+.",
+                    "Primeira vez com o seu medidor. Você vai precisar do código de convite do Medidor+ e de uma conta gratuita na Tuya (o app ensina, leva uns 15 min).",
                 ) { go(Step.INVITE) }
             }
 
@@ -183,7 +190,7 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
                         if (api.checkCode(joinCode) == "invite") {
                             // é um convite para cadastrar medidor
                             invite = joinCode
-                            go(Step.MODE)
+                            startOwn()
                         } else {
                             finish(api.join(joinCode))
                         }
@@ -200,7 +207,7 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
                             // é um código de acesso a uma casa existente: entra direto
                             finish(api.join(invite))
                         } else {
-                            go(Step.MODE)
+                            startOwn()
                         }
                     }
                 }

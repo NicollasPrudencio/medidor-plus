@@ -56,8 +56,11 @@ fun fmtIsoDate(iso: String?): String =
 fun daysUntil(iso: String?): Long? =
     iso?.let { runCatching { ChronoUnit.DAYS.between(LocalDate.now(), LocalDate.parse(it)) }.getOrNull() }
 
-/** Quem deve renovar o plano desta casa: o próprio usuário (projeto próprio) ou o admin (central). */
-fun canRenew(h: HomeInfo) = h.own || h.isAdmin
+/**
+ * Quem renova o plano desta casa: o responsável (quem conectou o projeto Tuya dela).
+ * Casas ainda no projeto central (legado) dependem do administrador até o dono conectar o próprio projeto.
+ */
+fun canRenew(h: HomeInfo) = if (h.own) h.isOwner else h.isAdmin
 
 fun shareText(ctx: Context, text: String, title: String) {
     val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
@@ -91,7 +94,7 @@ fun PlanDateField(value: String?, onChange: (String) -> Unit) {
 
 /** Aviso no topo da tela sobre o plano da Tuya (vencendo, vencido ou sem data). */
 @Composable
-fun HomeBanner(home: HomeInfo, onRenew: () -> Unit) {
+fun HomeBanner(home: HomeInfo, onRenew: () -> Unit, onSwitch: () -> Unit) {
     val days = daysUntil(home.planExpires)
     val expired = home.status == "expired"
     val (title, body, urgent) = when {
@@ -102,8 +105,15 @@ fun HomeBanner(home: HomeInfo, onRenew: () -> Unit) {
         )
         expired -> Triple(
             "Serviço temporariamente indisponível",
-            "O plano da Tuya do administrador venceu. Ele já foi avisado; seus dados voltam quando ele renovar.",
+            if (home.own) "O plano da Tuya desta casa venceu. O responsável (quem conectou o projeto Tuya) já foi avisado; os dados voltam quando ele renovar."
+            else "O plano da Tuya venceu. O administrador já foi avisado; os dados voltam quando ele renovar.",
             true,
+        )
+        // Casa ainda no projeto do administrador: pedir ao dono que conecte o próprio projeto
+        !home.own && !home.isAdmin -> Triple(
+            "Conecte o seu próprio projeto Tuya",
+            "Esta casa ainda usa o projeto Tuya de outra pessoa. Para não depender dela, o dono do medidor deve conectar o próprio projeto (leva uns 15 min). O histórico continua.",
+            false,
         )
         !canRenew(home) -> return
         days == null -> Triple(
@@ -127,7 +137,9 @@ fun HomeBanner(home: HomeInfo, onRenew: () -> Unit) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, fontWeight = FontWeight.Bold)
             Text(body, style = MaterialTheme.typography.bodyMedium)
-            if (canRenew(home)) {
+            if (!home.own && !home.isAdmin && !expired) {
+                TextButton(onClick = onSwitch) { Text("Conectar meu projeto") }
+            } else if (canRenew(home)) {
                 TextButton(onClick = onRenew) { Text(if (days == null && !expired) "Informar data" else "Como renovar") }
             }
         }
@@ -269,7 +281,7 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
                                 ctx,
                                 "Convite para usar o Medidor+ com o seu medidor:\n$install" +
                                     "2) Abra o app, toque em \"Cadastrar o meu medidor\" e use o convite: ${c.code}\n" +
-                                    "(vale 30 dias, uso único). Se for conectar pelo Smart Life, me avise na hora para eu gerar o QR de vínculo.",
+                                    "(vale 30 dias, uso único). O app ensina a criar a sua conta gratuita na Tuya e conectar o medidor (uns 15 min, mais fácil no computador). O plano da Tuya fica com você — o app avisa quando precisar renovar.",
                                 "Convidar nova casa",
                             )
                         }
@@ -279,10 +291,6 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Convidar nova casa") }
         OutlinedButton(onClick = { showHomes = true }, modifier = Modifier.fillMaxWidth()) { Text("Casas cadastradas") }
-        Text(
-            "Para vincular o Smart Life de uma casa nova: platform.tuya.com → projeto → Devices → Link App Account → Add App Account → mostre o QR para a pessoa escanear.",
-            style = MaterialTheme.typography.bodySmall,
-        )
     }
 
     TextButton(onClick = { confirmLeave = true }) { Text("Sair desta casa", color = MaterialTheme.colorScheme.error) }

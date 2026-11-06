@@ -84,10 +84,10 @@ private val MANUAL = listOf(
     ManualSection(
         "Usar meu próprio projeto Tuya (dono do medidor)",
         listOf(
-            "Se a sua casa foi conectada pelo Smart Life no projeto de outra pessoa (por exemplo, quem instalou o carregador), o plano da Tuya fica com ela. Para não depender dela, use o seu próprio projeto:",
+            "Se a sua casa foi instalada usando o projeto Tuya de outra pessoa (por exemplo, quem instalou o carregador), o plano da Tuya fica com ela. Para não depender dela, use o seu próprio projeto — o app mostra um aviso no topo pedindo isso:",
             "Config → \"Usar meu próprio projeto Tuya\" e siga o passo a passo (conta no portal da Tuya, projeto, vincular o Smart Life, copiar as chaves e a data de vencimento).",
             "Use o seu e-mail na conta da Tuya, a mesma conta do Smart Life onde o medidor está, e não remova nem reconfigure o medidor no Smart Life.",
-            "O histórico continua igual. A partir daí, o app avisa você quando for preciso renovar.",
+            "O histórico continua igual. A partir daí você é o responsável pela casa: o app avisa você (e só você) quando for preciso renovar.",
         ),
     ),
     ManualSection(
@@ -180,9 +180,8 @@ private val MANUAL = listOf(
         listOf(
             "Na primeira vez que abre o app, escolha:",
             "• Entrar numa casa que já usa o Medidor+: digite o código de acesso que alguém da casa enviou (Config → Compartilhar acesso a esta casa). Vale 7 dias.",
-            "• Cadastrar o meu medidor: precisa do código de convite do administrador do Medidor+ (vale 30 dias, uso único). Depois escolha como conectar:",
-            "   – Pelo app Smart Life (mais fácil): o administrador gera um QR code de vínculo; você escaneia no Smart Life (Eu → ícone de escanear) e depois copia o \"ID virtual\" do medidor (no Smart Life: abra o medidor → ✏️ → Informações do dispositivo). Você não precisa renovar nada.",
-            "   – Com meu próprio projeto Tuya (avançado): o app mostra o passo a passo do portal platform.tuya.com, você copia o Access ID e o Access Secret, escolhe o medidor e informa quando vence o plano gratuito.",
+            "• Cadastrar o meu medidor: precisa do código de convite do administrador do Medidor+ (vale 30 dias, uso único). O app mostra o passo a passo para criar a sua conta gratuita no portal da Tuya (platform.tuya.com), vincular o seu app Smart Life, copiar o Access ID e o Access Secret, escolher o medidor e informar quando vence o plano gratuito.",
+            "Cada casa é independente: quem cadastra o medidor é o responsável pela casa e renova o próprio plano da Tuya. Ninguém depende da renovação de outra casa.",
             "Se o medidor tiver placas solares, marque a opção no último passo: assim a energia injetada na rede não é contada como consumo.",
         ),
     ),
@@ -197,9 +196,8 @@ private val MANUAL = listOf(
     ManualSection(
         "Renovar o plano da Tuya",
         listOf(
-            "A Tuya oferece um plano gratuito que precisa ser renovado de tempos em tempos. Quem renova:",
-            "• Conectado pelo Smart Life: o administrador do Medidor+ renova por todos — você não precisa fazer nada.",
-            "• Projeto próprio: você renova o seu.",
+            "A Tuya oferece um plano gratuito que precisa ser renovado de tempos em tempos. Quem renova é o responsável pela casa: a pessoa que conectou o projeto Tuya dela (no cadastro ou em \"Usar meu próprio projeto Tuya\"). Só ela recebe os avisos.",
+            "Quem só compartilha a casa (entrou com código de acesso) não precisa fazer nada — se o plano vencer, o app mostra que o responsável foi avisado.",
             "O app avisa no topo da tela 7 dias antes de vencer. Toque em \"Como renovar\" e siga o passo a passo: entrar em platform.tuya.com → Cloud → Development → seu projeto → Service API / Purchase → IoT Core → Extend/Renew → enviar o formulário. A aprovação pode levar de algumas horas a 1–2 dias.",
             "Depois de aprovado, informe a nova data de vencimento no próprio passo a passo (ou em Config → Renovar / alterar vencimento). O app testa a conexão na hora.",
             "Se vencer, o app avisa e para de registrar leituras, mas a energia consumida não se perde: aparece quando o plano voltar.",
@@ -210,9 +208,8 @@ private val MANUAL = listOf(
         listOf(
             "Só aparece no celular do administrador (Config → Administração):",
             "• Convidar nova casa: gera um convite (30 dias, uso único) e já monta a mensagem com o link de instalação.",
-            "• Para quem vai conectar pelo Smart Life: no portal da Tuya, abra o projeto → Devices → Link App Account → Add App Account e mostre o QR para a pessoa escanear (ele expira em poucos minutos).",
             "• Casas cadastradas: mostra todas as casas, se estão funcionando e a última leitura.",
-            "• Renovar o plano central: vale para todas as casas conectadas pelo Smart Life. Informe sempre a data de vencimento para receber o aviso.",
+            "• Casas que ainda usam o projeto Tuya do administrador (instalações antigas) dependem dele até o dono conectar o próprio projeto — o app do dono mostra um aviso pedindo isso.",
         ),
     ),
     ManualSection(

@@ -144,6 +144,7 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
     var showSettings by remember { mutableStateOf(false) }
     var showManual by remember { mutableStateOf(false) }
     var showRenew by remember { mutableStateOf(false) }
+    var showSwitch by remember { mutableStateOf(false) }
     var home by remember { mutableStateOf<HomeInfo?>(null) }
     var settingsVersion by remember { mutableIntStateOf(0) }
     var flags by remember { mutableStateOf<Map<String, Flag>>(emptyMap()) }
@@ -231,7 +232,7 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
                 TextButton(onClick = { showSettings = true }) { Text("Config") }
             }
 
-            home?.let { HomeBanner(it) { showRenew = true } }
+            home?.let { HomeBanner(it, onRenew = { showRenew = true }, onSwitch = { showSwitch = true }) }
 
             error?.let {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
@@ -251,6 +252,10 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
     UpdateGate(prefs, reload)
 
     if (showManual) ManualScreen(onClose = { showManual = false })
+
+    if (showSwitch) home?.let { h ->
+        SwitchToOwnScreen(prefs, h, onClose = { showSwitch = false; reload++ }, onUpdated = { home = it })
+    }
 
     if (showRenew) home?.let { h ->
         RenewScreen(prefs, h, onClose = { showRenew = false; reload++ }, onUpdated = { home = it })

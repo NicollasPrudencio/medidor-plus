@@ -58,6 +58,8 @@ data class HomeInfo(
     val lastOk: Long?,
     val lastError: String?,
     val isAdmin: Boolean,
+    /** Responsável pela casa: quem conectou o projeto Tuya (recebe os avisos e renova o plano). */
+    val isOwner: Boolean,
 ) {
     val own get() = mode == "own"
 }
@@ -210,6 +212,7 @@ class Api(private val baseUrl: String, private val token: String) {
         lastOk = o.longOrNull("lastOk"),
         lastError = o.stringOrNull("lastError"),
         isAdmin = o.optBoolean("isAdmin"),
+        isOwner = o.optBoolean("isOwner"),
     )
 
     private fun parseCode(o: JSONObject) = Code(o.getString("code"), o.getLong("expires"))

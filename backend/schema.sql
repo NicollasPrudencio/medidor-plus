@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS home_tokens (
   token      TEXT PRIMARY KEY,
   home_id    TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  is_admin   INTEGER NOT NULL DEFAULT 0
+  is_admin   INTEGER NOT NULL DEFAULT 0,
+  is_owner   INTEGER NOT NULL DEFAULT 0  -- responsável pela casa: conectou o projeto Tuya e renova o plano
 );
 
 -- Códigos: invite (cadastrar casa) e share (entrar numa casa); admin=1 cria token de administrador

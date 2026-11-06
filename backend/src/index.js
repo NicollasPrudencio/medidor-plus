@@ -742,16 +742,22 @@ async function authHome(env, token) {
   if (!token) return null;
   let id = null;
   let admin = false;
+  let owner = false;
   if (env.APP_TOKEN && token === env.APP_TOKEN) {
     id = "casa1"; // instalações da primeira versão (aparelho do administrador)
     admin = true;
   } else {
-    const row = await env.DB.prepare("SELECT home_id, is_admin FROM home_tokens WHERE token = ?").bind(token).first();
+    const row = await env.DB.prepare("SELECT home_id, is_admin, is_owner FROM home_tokens WHERE token = ?").bind(token).first();
     id = row?.home_id;
     admin = !!row?.is_admin;
+    owner = !!row?.is_owner;
   }
   const h = id ? await loadHome(env, id) : null;
-  if (h) h.tokenAdmin = admin; // administrador é o aparelho, não a casa
+  if (h) {
+    h.tokenAdmin = admin; // administrador é o aparelho, não a casa
+    h.tokenOwner = owner; // responsável: quem conectou o projeto Tuya da casa (renova o plano)
+    h.token = token;
+  }
   return h;
 }
 
@@ -795,10 +801,10 @@ async function checkCode(env, code, kind) {
 const useCode = (env, code) =>
   env.DB.prepare("UPDATE codes SET uses_left = uses_left - 1 WHERE code = ?").bind(code).run();
 
-async function newToken(env, homeId, admin = false) {
+async function newToken(env, homeId, admin = false, owner = false) {
   const token = randomToken();
-  await env.DB.prepare("INSERT INTO home_tokens (token, home_id, is_admin, created_at) VALUES (?, ?, ?, ?)")
-    .bind(token, homeId, admin ? 1 : 0, Date.now())
+  await env.DB.prepare("INSERT INTO home_tokens (token, home_id, is_admin, is_owner, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(token, homeId, admin ? 1 : 0, owner ? 1 : 0, Date.now())
     .run();
   return token;
 }
@@ -887,7 +893,9 @@ async function modelProps(env, c, deviceId) {
 /** Cria a casa: valida convite, aparelho e compatibilidade; devolve o token do app. */
 async function registerHome(env, body) {
   const invite = await checkCode(env, body.invite, "invite");
-  const mode = body.mode === "own" ? "own" : "central";
+  // Casa nova sempre com o projeto Tuya do próprio dono: cada casa renova o próprio plano
+  if (body.mode !== "own") throw new Error("Cadastre o medidor com o seu próprio projeto Tuya (atualize o app).");
+  const mode = "own";
   const c = regCreds(env, { ...body, mode });
   const deviceId = String(body.deviceId ?? "").trim();
   if (!/^[a-z0-9]{10,32}$/i.test(deviceId)) throw new Error("ID do aparelho inválido.");
@@ -930,8 +938,10 @@ async function registerHome(env, body) {
     .run();
   await useCode(env, invite.code);
   await insertReading(env, id, reading);
-  const token = await newToken(env, id);
-  return { token, home: await homeInfo(Object.assign(Object.create(env), { HOME: await loadHome(env, id) })) };
+  const token = await newToken(env, id, false, true);
+  const created = await loadHome(env, id);
+  created.tokenOwner = true;
+  return { token, home: await homeInfo(Object.assign(Object.create(env), { HOME: created })) };
 }
 
 async function centralPlan(env) {
@@ -951,6 +961,7 @@ async function homeInfo(env) {
     lastOk: h.last_ok,
     lastError: h.last_error,
     isAdmin: !!h.tokenAdmin,
+    isOwner: !!h.tokenOwner,
   };
 }
 
@@ -959,6 +970,7 @@ async function setPlan(env, expires) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expires ?? "")) throw new Error("use expires=AAAA-MM-DD");
   const h = env.HOME;
   if (h.mode === "own") {
+    if (!h.tokenOwner) throw new Error("O plano desta casa é renovado pelo responsável (quem conectou o projeto Tuya).");
     await env.DB.prepare("UPDATE homes SET plan_expires = ? WHERE id = ?").bind(expires, h.id).run();
   } else if (h.tokenAdmin) {
     await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value, expires) VALUES ('central_plan_expires', ?, 0)")
@@ -974,8 +986,7 @@ async function setPlan(env, expires) {
   } catch (e) {
     await setStatus(env, h.id, isExpired(e) ? "expired" : "error", errMsg(e));
   }
-  env.HOME = await loadHome(env, h.id);
-  env.HOME.tokenAdmin = h.tokenAdmin;
+  env.HOME = Object.assign(await loadHome(env, h.id), { tokenAdmin: h.tokenAdmin, tokenOwner: h.tokenOwner, token: h.token });
   return homeInfo(env);
 }
 
@@ -1017,9 +1028,13 @@ async function switchToOwn(env, body) {
   )
     .bind(c.id, await encrypt(env, c.secret), c.base, plan, Date.now(), h.id)
     .run();
-  const ta = h.tokenAdmin;
-  env.HOME = await loadHome(env, h.id);
-  env.HOME.tokenAdmin = ta;
+  // quem conectou o projeto passa a ser o responsável pela renovação
+  if (h.token && h.token !== env.APP_TOKEN) {
+    await env.DB.prepare("UPDATE home_tokens SET is_owner = CASE WHEN token = ? THEN 1 ELSE 0 END WHERE home_id = ?")
+      .bind(h.token, h.id)
+      .run();
+  }
+  env.HOME = Object.assign(await loadHome(env, h.id), { tokenAdmin: h.tokenAdmin, tokenOwner: true, token: h.token });
   return homeInfo(env);
 }
 
