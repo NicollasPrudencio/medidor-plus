@@ -48,7 +48,8 @@ object Notifier {
 
     /** Texto do aviso de plano, ou null se não é dia de avisar. */
     fun planMessage(home: HomeInfo): Pair<String, String>? {
-        if (!canRenew(home)) return null
+        // notificação vai só para quem renova de fato: o responsável (ou o admin, em casas no projeto central)
+        if (!(if (home.own) home.isOwner else home.isAdmin)) return null
         if (home.status == "expired") {
             return "O plano da Tuya venceu" to "O Medidor+ parou de registrar o consumo de \"${home.name}\". Toque para renovar."
         }
@@ -103,7 +104,7 @@ class MonitorWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
     override suspend fun doWork(): Result {
         val prefs = Prefs(applicationContext)
         if (!prefs.configured) return Result.success()
-        val api = prefs.api()
+        val api = prefs.ownApi() // notificações sempre da casa do próprio aparelho
         runCatching { checkCharge(prefs, api) }
         runCatching { checkPlan(prefs, api) }
         return Result.success()

@@ -60,6 +60,8 @@ data class HomeInfo(
     val isAdmin: Boolean,
     /** Responsável pela casa: quem conectou o projeto Tuya (recebe os avisos e renova o plano). */
     val isOwner: Boolean,
+    /** Administrador vendo uma casa que não é a dele. */
+    val viewing: Boolean = false,
 ) {
     val own get() = mode == "own"
 }
@@ -83,7 +85,7 @@ data class AppVersion(
 )
 
 /** Cliente do backend (Cloudflare Worker). */
-class Api(private val baseUrl: String, private val token: String) {
+class Api(private val baseUrl: String, private val token: String, private val viewHome: String? = null) {
 
     suspend fun now(): Now {
         val o = JSONObject(request("/api/now"))
@@ -213,6 +215,7 @@ class Api(private val baseUrl: String, private val token: String) {
         lastError = o.stringOrNull("lastError"),
         isAdmin = o.optBoolean("isAdmin"),
         isOwner = o.optBoolean("isOwner"),
+        viewing = o.optBoolean("viewing"),
     )
 
     private fun parseCode(o: JSONObject) = Code(o.getString("code"), o.getLong("expires"))
@@ -256,6 +259,7 @@ class Api(private val baseUrl: String, private val token: String) {
     private fun open(path: String): HttpURLConnection {
         val conn = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
         conn.setRequestProperty("Authorization", "Bearer $token")
+        viewHome?.let { conn.setRequestProperty("X-Home", it) } // administrador abrindo outra casa
         conn.connectTimeout = 15_000
         return conn
     }
@@ -390,5 +394,18 @@ class Prefs(ctx: Context) {
 
     val configured: Boolean get() = url.isNotBlank() && token.isNotBlank()
 
-    fun api() = Api(url, token)
+    /** Administrador: casa aberta para suporte (null = a própria casa). */
+    var viewHome: String?
+        get() = sp.getString("viewHome", null)
+        set(v) = sp.edit().putString("viewHome", v).apply()
+
+    /** Id da casa do próprio aparelho (para saber quando o admin voltou para ela). */
+    var ownHomeId: String?
+        get() = sp.getString("ownHomeId", null)
+        set(v) = sp.edit().putString("ownHomeId", v).apply()
+
+    fun api() = Api(url, token, viewHome)
+
+    /** Sempre a casa do próprio aparelho (usado pelas notificações em segundo plano). */
+    fun ownApi() = Api(url, token)
 }

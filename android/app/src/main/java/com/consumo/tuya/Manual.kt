@@ -208,7 +208,8 @@ private val MANUAL = listOf(
         listOf(
             "Só aparece no celular do administrador (Config → Administração):",
             "• Convidar nova casa: gera um convite (30 dias, uso único) e já monta a mensagem com o link de instalação.",
-            "• Casas cadastradas: mostra todas as casas, se estão funcionando e a última leitura.",
+            "• Casas cadastradas: mostra todas as casas, se estão funcionando e a última leitura. Toque em \"Abrir esta casa\" para ver e configurar qualquer casa com acesso total (dados, gráficos, recargas, exportação, vencimento do plano). No topo aparece \"Administrador — vendo: ...\"; toque em \"Voltar à minha casa\" para sair.",
+            "• Abrir uma casa como administrador não muda o responsável por ela: os avisos de renovação continuam indo para o dono. Só o administrador pode abrir casas de outras pessoas.",
             "• Casas que ainda usam o projeto Tuya do administrador (instalações antigas) dependem dele até o dono conectar o próprio projeto — o app do dono mostra um aviso pedindo isso.",
         ),
     ),

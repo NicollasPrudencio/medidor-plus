@@ -158,11 +158,20 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
         if (!connected) return@LaunchedEffect
         loading = true
         error = null
-        runCatching { prefs.api().home() }.onSuccess { home = it }.onFailure {
+        runCatching { prefs.api().home() }.onSuccess {
+            home = it
+            if (!it.viewing) prefs.ownHomeId = it.id
+        }.onFailure {
             // token removido/inválido: volta para o cadastro
             if (it.message == "não autorizado") {
-                prefs.token = ""
-                connected = false
+                if (prefs.viewHome != null) {
+                    // casa aberta pelo admin não existe mais: volta para a própria casa
+                    prefs.viewHome = null
+                    reload++
+                } else {
+                    prefs.token = ""
+                    connected = false
+                }
             }
         }
         try {
@@ -174,6 +183,16 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
             if ((e as? ApiException)?.code == "tuya_expired") runCatching { prefs.api().home() }.onSuccess { home = it }
         }
         loading = false
+    }
+
+    // Administrador: abrir outra casa (ou voltar para a própria, com null)
+    fun openHome(id: String?) {
+        prefs.viewHome = id?.takeIf { it != prefs.ownHomeId }
+        home = null
+        now = null
+        error = null
+        showSettings = false
+        reload++
     }
 
     // Veio da notificação de plano: abre a renovação assim que a casa carregar
@@ -232,6 +251,14 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
                 TextButton(onClick = { showSettings = true }) { Text("Config") }
             }
 
+            home?.takeIf { it.viewing }?.let { h ->
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+                    Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Administrador — vendo: ${h.name}", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { openHome(null) }) { Text("Voltar à minha casa") }
+                    }
+                }
+            }
             home?.let { HomeBanner(it, onRenew = { showRenew = true }, onSwitch = { showSwitch = true }) }
 
             error?.let {
@@ -267,6 +294,7 @@ fun App(prefs: Prefs, openRenew: Boolean = false, onRenewOpened: () -> Unit = {}
             onFlagsChange = { flags = it },
             onHome = { home = it },
             onRenew = { showSettings = false; showRenew = true },
+            onOpenHome = { openHome(it) },
             onLeave = {
                 prefs.token = ""
                 home = null
@@ -475,6 +503,7 @@ fun SettingsDialog(
     onHome: (HomeInfo) -> Unit,
     onRenew: () -> Unit,
     onLeave: () -> Unit,
+    onOpenHome: (String) -> Unit,
     onDone: () -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -674,7 +703,7 @@ fun SettingsDialog(
                 }
 
                 HorizontalDivider()
-                HomeSection(prefs, home, onHome = onHome, onRenew = onRenew, onLeave = onLeave)
+                HomeSection(prefs, home, onHome = onHome, onRenew = onRenew, onLeave = onLeave, onOpenHome = onOpenHome)
                 HorizontalDivider()
                 Text("Notificações", fontWeight = FontWeight.Bold)
                 Row(verticalAlignment = Alignment.CenterVertically) {

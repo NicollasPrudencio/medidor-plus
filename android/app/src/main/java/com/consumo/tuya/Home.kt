@@ -60,7 +60,7 @@ fun daysUntil(iso: String?): Long? =
  * Quem renova o plano desta casa: o responsável (quem conectou o projeto Tuya dela).
  * Casas ainda no projeto central (legado) dependem do administrador até o dono conectar o próprio projeto.
  */
-fun canRenew(h: HomeInfo) = if (h.own) h.isOwner else h.isAdmin
+fun canRenew(h: HomeInfo) = if (h.own) h.isOwner || h.isAdmin else h.isAdmin
 
 fun shareText(ctx: Context, text: String, title: String) {
     val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
@@ -212,7 +212,14 @@ fun RenewScreen(prefs: Prefs, home: HomeInfo, onClose: () -> Unit, onUpdated: (H
 
 /** Seção "Casa" (e "Administração", para o admin) dentro das configurações. */
 @Composable
-fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRenew: () -> Unit, onLeave: () -> Unit) {
+fun HomeSection(
+    prefs: Prefs,
+    home: HomeInfo?,
+    onHome: (HomeInfo) -> Unit,
+    onRenew: () -> Unit,
+    onLeave: () -> Unit,
+    onOpenHome: (String) -> Unit,
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var msg by remember { mutableStateOf<String?>(null) }
@@ -301,10 +308,12 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
         OutlinedButton(onClick = { showHomes = true }, modifier = Modifier.fillMaxWidth()) { Text("Casas cadastradas") }
     }
 
-    TextButton(onClick = { confirmLeave = true }) { Text("Sair desta casa", color = MaterialTheme.colorScheme.error) }
+    if (!home.viewing) {
+        TextButton(onClick = { confirmLeave = true }) { Text("Sair desta casa", color = MaterialTheme.colorScheme.error) }
+    }
     msg?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
-    if (showHomes) AdminHomesDialog(prefs) { showHomes = false }
+    if (showHomes) AdminHomesDialog(prefs, onOpen = { id -> showHomes = false; onOpenHome(id) }) { showHomes = false }
     if (showSwitch) SwitchToOwnScreen(prefs, home, onClose = { showSwitch = false }, onUpdated = onHome)
     if (confirmLeave) {
         AlertDialog(
@@ -323,7 +332,7 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
 }
 
 @Composable
-private fun AdminHomesDialog(prefs: Prefs, onClose: () -> Unit) {
+private fun AdminHomesDialog(prefs: Prefs, onOpen: (String) -> Unit, onClose: () -> Unit) {
     var data by remember { mutableStateOf<Pair<String?, List<AdminHome>>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
@@ -355,6 +364,7 @@ private fun AdminHomesDialog(prefs: Prefs, onClose: () -> Unit) {
                         if (h.status != "ok" && h.lastError != null) {
                             Text(h.lastError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         }
+                        TextButton(onClick = { onOpen(h.id) }) { Text("Abrir esta casa") }
                     }
                 }
                 if (data == null && error == null) Text("Carregando...")

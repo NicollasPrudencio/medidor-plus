@@ -65,8 +65,10 @@ export default {
       return json({ error: errMsg(e) }, 400);
     }
 
-    const home = await authHome(env, bearer);
+    // Administrador pode abrir qualquer casa (cabeçalho X-Home com o id da casa)
+    const home = await authHome(env, bearer, req.headers.get("X-Home"));
     if (!home) return json({ error: "não autorizado" }, 401);
+    if (home.denied) return json({ error: "Apenas o administrador pode abrir outras casas." }, 403);
     // env da requisição com a casa autenticada (bindings continuam acessíveis pelo protótipo)
     const henv = Object.create(env);
     henv.HOME = home;
@@ -738,7 +740,7 @@ async function publishApk(env, req, q) {
 
 // ---------- Casas (multi-usuário) ----------
 
-async function authHome(env, token) {
+async function authHome(env, token, viewId = null) {
   if (!token) return null;
   let id = null;
   let admin = false;
@@ -752,10 +754,14 @@ async function authHome(env, token) {
     admin = !!row?.is_admin;
     owner = !!row?.is_owner;
   }
-  const h = id ? await loadHome(env, id) : null;
+  // Administrador abrindo outra casa: acesso total, mas sem virar o responsável dela
+  const viewing = admin && viewId && viewId !== id;
+  if (viewId && viewId !== id && !admin) return { denied: true }; // só o administrador abre outras casas
+  const h = id ? await loadHome(env, viewing ? viewId : id) : null;
   if (h) {
     h.tokenAdmin = admin; // administrador é o aparelho, não a casa
-    h.tokenOwner = owner; // responsável: quem conectou o projeto Tuya da casa (renova o plano)
+    h.tokenOwner = viewing ? false : owner; // responsável: quem conectou o projeto Tuya da casa (renova o plano)
+    h.viewing = !!viewing;
     h.token = token;
   }
   return h;
@@ -979,6 +985,7 @@ async function homeInfo(env) {
     lastError: h.last_error,
     isAdmin: !!h.tokenAdmin,
     isOwner: !!h.tokenOwner,
+    viewing: !!h.viewing, // administrador vendo uma casa que não é a dele
   };
 }
 
@@ -987,7 +994,9 @@ async function setPlan(env, expires) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expires ?? "")) throw new Error("use expires=AAAA-MM-DD");
   const h = env.HOME;
   if (h.mode === "own") {
-    if (!h.tokenOwner) throw new Error("O plano desta casa é renovado pelo responsável (quem conectou o projeto Tuya).");
+    if (!h.tokenOwner && !h.tokenAdmin) {
+      throw new Error("O plano desta casa é renovado pelo responsável (quem conectou o projeto Tuya).");
+    }
     await env.DB.prepare("UPDATE homes SET plan_expires = ? WHERE id = ?").bind(expires, h.id).run();
   } else if (h.tokenAdmin) {
     await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value, expires) VALUES ('central_plan_expires', ?, 0)")
@@ -1003,8 +1012,9 @@ async function setPlan(env, expires) {
   } catch (e) {
     await setStatus(env, h.id, isExpired(e) ? "expired" : "error", errMsg(e));
   }
-  env.HOME = Object.assign(await loadHome(env, h.id), { tokenAdmin: h.tokenAdmin, tokenOwner: h.tokenOwner, token: h.token });
-  return homeInfo(env);
+  env.HOME = Object.assign(await loadHome(env, h.id), {
+    tokenAdmin: h.tokenAdmin, tokenOwner: h.tokenOwner, token: h.token, viewing: h.viewing,
+  });  return homeInfo(env);
 }
 
 /** Diz se um código é de acesso (share) ou convite (invite), sem consumi-lo. */
@@ -1046,12 +1056,15 @@ async function switchToOwn(env, body) {
     .bind(c.id, await encrypt(env, c.secret), c.base, plan, Date.now(), h.id)
     .run();
   // quem conectou o projeto passa a ser o responsável pela renovação
-  if (h.token && h.token !== env.APP_TOKEN) {
+  // (administrador apenas dando suporte em outra casa não vira o responsável)
+  if (h.token && h.token !== env.APP_TOKEN && !h.viewing) {
     await env.DB.prepare("UPDATE home_tokens SET is_owner = CASE WHEN token = ? THEN 1 ELSE 0 END WHERE home_id = ?")
       .bind(h.token, h.id)
       .run();
   }
-  env.HOME = Object.assign(await loadHome(env, h.id), { tokenAdmin: h.tokenAdmin, tokenOwner: true, token: h.token });
+  env.HOME = Object.assign(await loadHome(env, h.id), {
+    tokenAdmin: h.tokenAdmin, tokenOwner: !h.viewing, token: h.token, viewing: h.viewing,
+  });
   return homeInfo(env);
 }
 
