@@ -36,6 +36,7 @@ private val MANUAL = listOf(
         listOf(
             "O Medidor+ mostra o consumo de energia do seu medidor com garra (Tuya): potência em tempo real, consumo por hora, dia, mês e ano, recargas do carro e quanto isso custa em reais.",
             "O medidor envia os dados para a nuvem da Tuya. Um servidor do Medidor+ lê o medidor a cada 10 minutos e guarda o histórico — por isso os dados continuam sendo registrados mesmo com o app fechado.",
+            "Cada casa vê só os próprios dados. Várias pessoas da mesma casa podem usar o app em celulares diferentes.",
         ),
     ),
     ManualSection(
@@ -154,10 +155,43 @@ private val MANUAL = listOf(
         ),
     ),
     ManualSection(
-        "Instalar em outro celular",
+        "Primeiro acesso: entrar numa casa ou cadastrar um medidor",
         listOf(
-            "Em Config, toque em \"Compartilhar app\" e envie o link (por exemplo, pelo WhatsApp).",
-            "No outro celular: abra o link, toque em \"Baixar app\", abra o arquivo baixado, permita a instalação e toque em Instalar. O app já vem configurado.",
+            "Na primeira vez que abre o app, escolha:",
+            "• Entrar numa casa que já usa o Medidor+: digite o código de acesso que alguém da casa enviou (Config → Compartilhar acesso a esta casa). Vale 7 dias.",
+            "• Cadastrar o meu medidor: precisa do código de convite do administrador do Medidor+ (vale 30 dias, uso único). Depois escolha como conectar:",
+            "   – Pelo app Smart Life (mais fácil): o administrador gera um QR code de vínculo; você escaneia no Smart Life (Eu → ícone de escanear) e depois copia o \"ID virtual\" do medidor (no Smart Life: abra o medidor → ✏️ → Informações do dispositivo). Você não precisa renovar nada.",
+            "   – Com meu próprio projeto Tuya (avançado): o app mostra o passo a passo do portal platform.tuya.com, você copia o Access ID e o Access Secret, escolhe o medidor e informa quando vence o plano gratuito.",
+            "Se o medidor tiver placas solares, marque a opção no último passo: assim a energia injetada na rede não é contada como consumo.",
+        ),
+    ),
+    ManualSection(
+        "Compartilhar com outra pessoa da casa",
+        listOf(
+            "Em Config → \"Compartilhar acesso a esta casa\": o app envia uma mensagem (WhatsApp, etc.) com o link de instalação e um código de acesso válido por 7 dias.",
+            "A outra pessoa instala, abre o app, toca em \"Entrar numa casa que já usa o Medidor+\" e digita o código.",
+            "Para tirar o app de um celular da casa, use Config → \"Sair desta casa\" naquele celular.",
+        ),
+    ),
+    ManualSection(
+        "Renovar o plano da Tuya",
+        listOf(
+            "A Tuya oferece um plano gratuito que precisa ser renovado de tempos em tempos. Quem renova:",
+            "• Conectado pelo Smart Life: o administrador do Medidor+ renova por todos — você não precisa fazer nada.",
+            "• Projeto próprio: você renova o seu.",
+            "O app avisa no topo da tela 7 dias antes de vencer. Toque em \"Como renovar\" e siga o passo a passo: entrar em platform.tuya.com → Cloud → Development → seu projeto → Service API / Purchase → IoT Core → Extend/Renew → enviar o formulário. A aprovação pode levar de algumas horas a 1–2 dias.",
+            "Depois de aprovado, informe a nova data de vencimento no próprio passo a passo (ou em Config → Renovar / alterar vencimento). O app testa a conexão na hora.",
+            "Se vencer, o app avisa e para de registrar leituras, mas a energia consumida não se perde: aparece quando o plano voltar.",
+        ),
+    ),
+    ManualSection(
+        "Administrador do Medidor+",
+        listOf(
+            "Só aparece no celular do administrador (Config → Administração):",
+            "• Convidar nova casa: gera um convite (30 dias, uso único) e já monta a mensagem com o link de instalação.",
+            "• Para quem vai conectar pelo Smart Life: no portal da Tuya, abra o projeto → Devices → Link App Account → Add App Account e mostre o QR para a pessoa escanear (ele expira em poucos minutos).",
+            "• Casas cadastradas: mostra todas as casas, se estão funcionando e a última leitura.",
+            "• Renovar o plano central: vale para todas as casas conectadas pelo Smart Life. Informe sempre a data de vencimento para receber o aviso.",
         ),
     ),
     ManualSection(
@@ -167,7 +201,8 @@ private val MANUAL = listOf(
             "• Aparece erro de conexão: verifique a internet do celular e puxe para atualizar.",
             "• A potência aparece 0 W com o carro carregando: confira se o medidor está online no app da Tuya (Smart Life).",
             "• Dias sem dados no gráfico: o medidor ou a internet dele estava fora do ar e não há leituras desse período.",
-            "• A Tuya parou de responder por vários dias: o plano gratuito da Tuya precisa ser renovado periodicamente pelo responsável pela instalação. A energia consumida nesse tempo não se perde — aparece quando os dados voltarem.",
+            "• Aparece \"plano da Tuya venceu\" ou \"serviço indisponível\": veja \"Renovar o plano da Tuya\". A energia consumida nesse tempo não se perde.",
+            "• Troquei de celular: no celular novo, peça um código de acesso a alguém da casa (ou use Compartilhar acesso no celular antigo) e entre na casa.",
         ),
     ),
 )

@@ -44,6 +44,33 @@ data class Session(
     val durationMs: Long? get() = end?.let { it - start }
 }
 
+/** Casa (medidor) à qual este aparelho está conectado. */
+data class HomeInfo(
+    val id: String,
+    val name: String,
+    /** "central" = Smart Life vinculado ao projeto do administrador; "own" = projeto Tuya próprio. */
+    val mode: String,
+    val deviceId: String,
+    /** Vencimento do plano gratuito da Tuya (AAAA-MM-DD) — próprio (own) ou do projeto central. */
+    val planExpires: String?,
+    /** ok | error | expired */
+    val status: String?,
+    val lastOk: Long?,
+    val lastError: String?,
+    val isAdmin: Boolean,
+) {
+    val own get() = mode == "own"
+}
+
+data class Code(val code: String, val expires: Long)
+
+data class TuyaDevice(val id: String, val name: String, val product: String, val online: Boolean?)
+
+data class AdminHome(val id: String, val name: String, val mode: String, val status: String?, val lastOk: Long?, val lastError: String?, val planExpires: String?)
+
+/** Erro da API com código opcional (ex.: "tuya_expired" = plano da Tuya vencido). */
+class ApiException(message: String, val code: String?) : Exception(message)
+
 /** Versão publicada no servidor. Abaixo de [minVersionCode] a atualização é obrigatória. */
 data class AppVersion(
     val versionCode: Int,
@@ -115,6 +142,68 @@ class Api(private val baseUrl: String, private val token: String) {
     private fun parseFlags(o: JSONObject): Map<String, Flag> =
         o.keys().asSequence().mapNotNull { k -> Flag.of(o.optString(k))?.let { k to it } }.toMap()
 
+    suspend fun home(): HomeInfo = parseHome(JSONObject(request("/api/home")))
+
+    /** Código para outra pessoa da casa entrar (vale 7 dias). */
+    suspend fun shareCode(): Code = parseCode(JSONObject(request("/api/home/share", "POST")))
+
+    suspend fun setPlan(expires: String): HomeInfo = parseHome(JSONObject(request("/api/home/plan?expires=${enc(expires)}", "PUT")))
+
+    suspend fun setName(name: String): HomeInfo = parseHome(JSONObject(request("/api/home/name?name=${enc(name)}", "PUT")))
+
+    /** Administrador: convite para cadastrar uma casa nova (vale 30 dias, 1 uso). */
+    suspend fun createInvite(): Code = parseCode(JSONObject(request("/api/admin/invites", "POST")))
+
+    suspend fun adminHomes(): Pair<String?, List<AdminHome>> {
+        val o = JSONObject(request("/api/admin/homes"))
+        val a = o.getJSONArray("homes")
+        return o.stringOrNull("centralPlanExpires") to (0 until a.length()).map {
+            val h = a.getJSONObject(it)
+            AdminHome(
+                h.getString("id"), h.getString("name"), h.getString("mode"), h.stringOrNull("status"),
+                h.longOrNull("last_ok"), h.stringOrNull("last_error"), h.stringOrNull("plan_expires"),
+            )
+        }
+    }
+
+    // ---- Cadastro (sem token) ----
+
+    /** Entra numa casa existente; devolve o token deste aparelho. */
+    suspend fun join(code: String): Pair<String, HomeInfo> {
+        val o = JSONObject(request("/api/join?code=${enc(code)}", "POST"))
+        return o.getString("token") to parseHome(o.getJSONObject("home"))
+    }
+
+    /** Projeto próprio: valida Access ID/Secret e lista os aparelhos do projeto. */
+    suspend fun registerDevices(invite: String, clientId: String, secret: String, dataCenter: String): List<TuyaDevice> {
+        val body = JSONObject().put("invite", invite).put("clientId", clientId).put("secret", secret).put("dataCenter", dataCenter)
+        val a = JSONArray(request("/api/register/devices", "POST", body))
+        return (0 until a.length()).map {
+            val d = a.getJSONObject(it)
+            TuyaDevice(d.getString("id"), d.optString("name"), d.optString("product"), if (d.isNull("online")) null else d.getBoolean("online"))
+        }
+    }
+
+    /** Cria a casa; devolve o token deste aparelho. */
+    suspend fun register(body: JSONObject): Pair<String, HomeInfo> {
+        val o = JSONObject(request("/api/register", "POST", body))
+        return o.getString("token") to parseHome(o.getJSONObject("home"))
+    }
+
+    private fun parseHome(o: JSONObject) = HomeInfo(
+        id = o.getString("id"),
+        name = o.optString("name"),
+        mode = o.optString("mode"),
+        deviceId = o.optString("deviceId"),
+        planExpires = o.stringOrNull("planExpires"),
+        status = o.stringOrNull("status"),
+        lastOk = o.longOrNull("lastOk"),
+        lastError = o.stringOrNull("lastError"),
+        isAdmin = o.optBoolean("isAdmin"),
+    )
+
+    private fun parseCode(o: JSONObject) = Code(o.getString("code"), o.getLong("expires"))
+
     suspend fun version(): AppVersion {
         val o = JSONObject(request("/api/version"))
         return AppVersion(
@@ -158,24 +247,26 @@ class Api(private val baseUrl: String, private val token: String) {
         return conn
     }
 
-    private suspend fun request(path: String, method: String = "GET"): String = withContext(Dispatchers.IO) {
+    private suspend fun request(path: String, method: String = "GET", body: JSONObject? = null): String = withContext(Dispatchers.IO) {
         val conn = open(path)
         conn.readTimeout = 30_000
         conn.requestMethod = method
         if (method != "GET") {
+            val bytes = body?.toString()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
             conn.doOutput = true
-            conn.setFixedLengthStreamingMode(0)
-            conn.outputStream.close()
+            if (body != null) conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.setFixedLengthStreamingMode(bytes.size)
+            conn.outputStream.use { it.write(bytes) }
         }
         try {
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) {
-                val msg = runCatching { JSONObject(body).getString("error") }.getOrNull()
-                throw Exception(msg ?: "Erro HTTP $code")
+                val err = runCatching { JSONObject(text) }.getOrNull()
+                throw ApiException(err?.optString("error")?.ifBlank { null } ?: "Erro HTTP $code", err?.stringOrNull("code"))
             }
-            body
+            text
         } finally {
             conn.disconnect()
         }
@@ -184,6 +275,8 @@ class Api(private val baseUrl: String, private val token: String) {
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     private fun JSONObject.doubleOrNull(key: String): Double? = if (isNull(key)) null else getDouble(key)
+    private fun JSONObject.longOrNull(key: String): Long? = if (isNull(key)) null else getLong(key)
+    private fun JSONObject.stringOrNull(key: String): String? = if (isNull(key)) null else getString(key)
 }
 
 /** Configurações salvas no aparelho. */
@@ -195,9 +288,10 @@ class Prefs(ctx: Context) {
         get() = sp.getString("url", null) ?: BuildConfig.DEFAULT_URL
         set(v) = sp.edit().putString("url", v.ifBlank { BuildConfig.DEFAULT_URL }).apply()
 
+    /** Token deste aparelho na sua casa (obtido no cadastro ou com o código de acesso). */
     var token: String
-        get() = sp.getString("token", null) ?: BuildConfig.DEFAULT_TOKEN
-        set(v) = sp.edit().putString("token", v.ifBlank { BuildConfig.DEFAULT_TOKEN }).apply()
+        get() = sp.getString("token", null) ?: ""
+        set(v) = sp.edit().putString("token", v).apply()
 
     /** Tarifa única (R$/kWh, com impostos) — usada no modo simples. */
     var tariff: Double

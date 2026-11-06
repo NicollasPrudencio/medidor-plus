@@ -35,7 +35,6 @@ android {
         versionName = "1.0"
 
         buildConfigField("String", "DEFAULT_URL", "\"$serverUrl\"")
-        buildConfigField("String", "DEFAULT_TOKEN", "\"${publishProp("appToken")}\"")
         buildConfigField("String", "DOWNLOAD_URL", "\"$downloadUrl\"")
     }
 

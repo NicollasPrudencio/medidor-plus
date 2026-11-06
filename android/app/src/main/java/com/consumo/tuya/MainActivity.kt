@@ -116,8 +116,11 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App(prefs: Prefs) {
-    var showSettings by remember { mutableStateOf(!prefs.configured) }
+    var connected by remember { mutableStateOf(prefs.configured) }
+    var showSettings by remember { mutableStateOf(false) }
     var showManual by remember { mutableStateOf(false) }
+    var showRenew by remember { mutableStateOf(false) }
+    var home by remember { mutableStateOf<HomeInfo?>(null) }
     var settingsVersion by remember { mutableIntStateOf(0) }
     var flags by remember { mutableStateOf<Map<String, Flag>>(emptyMap()) }
     var reload by remember { mutableIntStateOf(0) }
@@ -126,17 +129,36 @@ fun App(prefs: Prefs) {
     var loading by remember { mutableStateOf(false) }
     val cost = remember(flags, settingsVersion) { prefs.costModel(flags) }
 
-    LaunchedEffect(reload) {
-        if (!prefs.configured) return@LaunchedEffect
+    LaunchedEffect(reload, connected) {
+        if (!connected) return@LaunchedEffect
         loading = true
         error = null
+        runCatching { prefs.api().home() }.onSuccess { home = it }.onFailure {
+            // token removido/inválido: volta para o cadastro
+            if (it.message == "não autorizado") {
+                prefs.token = ""
+                connected = false
+            }
+        }
         try {
             now = prefs.api().now()
             runCatching { prefs.api().flags() }.onSuccess { flags = it }
         } catch (e: Exception) {
             error = e.message ?: e.toString()
+            // plano vencido: atualiza o status da casa para mostrar o aviso certo
+            if ((e as? ApiException)?.code == "tuya_expired") runCatching { prefs.api().home() }.onSuccess { home = it }
         }
         loading = false
+    }
+
+    if (!connected) {
+        OnboardingScreen(prefs) { h ->
+            home = h
+            connected = true
+            reload++
+        }
+        if (showManual) ManualScreen(onClose = { showManual = false })
+        return
     }
 
     // Atualiza "Agora" só enquanto o app está visível (pausa em segundo plano):
@@ -148,7 +170,7 @@ fun App(prefs: Prefs) {
             while (true) {
                 val fast = (now?.powerW ?: 0.0) >= LIVE_THRESHOLD_W
                 delay(if (fast) 5_000 else 30_000)
-                if (prefs.configured && !loading) {
+                if (connected && !loading) {
                     runCatching { prefs.api().now() }.onSuccess { now = it; error = null }
                 }
             }
@@ -171,10 +193,12 @@ fun App(prefs: Prefs) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Medidor+", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text(home?.name ?: "Medidor+", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 TextButton(onClick = { showManual = true }) { Text("Ajuda") }
                 TextButton(onClick = { showSettings = true }) { Text("Config") }
             }
+
+            home?.let { HomeBanner(it) { showRenew = true } }
 
             error?.let {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
@@ -183,7 +207,7 @@ fun App(prefs: Prefs) {
             }
 
             now?.let { NowCard(it, cost, live) }
-            if (prefs.configured) {
+            run {
                 SessionsCard(prefs, cost, reload)
                 ChartCard(prefs, cost, reload)
                 PeriodCard(prefs, cost)
@@ -195,8 +219,24 @@ fun App(prefs: Prefs) {
 
     if (showManual) ManualScreen(onClose = { showManual = false })
 
+    if (showRenew) home?.let { h ->
+        RenewScreen(prefs, h, onClose = { showRenew = false; reload++ }, onUpdated = { home = it })
+    }
+
     if (showSettings) {
-        SettingsDialog(prefs, flags, onFlagsChange = { flags = it }) {
+        SettingsDialog(
+            prefs, flags, home,
+            onFlagsChange = { flags = it },
+            onHome = { home = it },
+            onRenew = { showSettings = false; showRenew = true },
+            onLeave = {
+                prefs.token = ""
+                home = null
+                now = null
+                showSettings = false
+                connected = false
+            },
+        ) {
             showSettings = false
             settingsVersion++
             reload++
@@ -392,13 +432,16 @@ fun PeriodCard(prefs: Prefs, cost: CostModel) {
 fun SettingsDialog(
     prefs: Prefs,
     flags: Map<String, Flag>,
+    home: HomeInfo?,
     onFlagsChange: (Map<String, Flag>) -> Unit,
+    onHome: (HomeInfo) -> Unit,
+    onRenew: () -> Unit,
+    onLeave: () -> Unit,
     onDone: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf(prefs.url) }
-    var token by remember { mutableStateOf(prefs.token) }
     var tariff by remember { mutableStateOf(String.format(PT, "%.4f", prefs.tariff)) }
     var detailed by remember { mutableStateOf(prefs.detailed) }
     var te by remember { mutableStateOf(fieldNum(prefs.te)) }
@@ -591,17 +634,8 @@ fun SettingsDialog(
                 }
 
                 HorizontalDivider()
-                if (BuildConfig.DOWNLOAD_URL.isNotEmpty()) {
-                    OutlinedButton(
-                        onClick = {
-                            val send = Intent(Intent.ACTION_SEND)
-                                .setType("text/plain")
-                                .putExtra(Intent.EXTRA_TEXT, "Instale o app Medidor+: ${BuildConfig.DOWNLOAD_URL}")
-                            ctx.startActivity(Intent.createChooser(send, "Compartilhar app"))
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Compartilhar app") }
-                }
+                HomeSection(prefs, home, onHome = onHome, onRenew = onRenew, onLeave = onLeave)
+                HorizontalDivider()
                 TextButton(onClick = { advanced = !advanced }) {
                     Text(if (advanced) "Ocultar avançado" else "Avançado")
                 }
@@ -610,11 +644,6 @@ fun SettingsDialog(
                         value = url, onValueChange = { url = it }, singleLine = true,
                         label = { Text("URL do servidor") },
                         placeholder = { Text("https://consumo-tuya.xxx.workers.dev") },
-                    )
-                    OutlinedTextField(
-                        value = token, onValueChange = { token = it }, singleLine = true,
-                        label = { Text("Token de acesso") },
-                        visualTransformation = PasswordVisualTransformation(),
                     )
                 }
                 Text(
@@ -626,7 +655,6 @@ fun SettingsDialog(
         confirmButton = {
             TextButton(onClick = {
                 prefs.url = url.trim()
-                prefs.token = token.trim()
                 parseNum(tariff)?.let { prefs.tariff = it }
                 prefs.detailed = detailed
                 prefs.te = parseNum(te) ?: 0.0

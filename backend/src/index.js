@@ -1,25 +1,41 @@
-// Worker do Cloudflare: coleta leituras do medidor Tuya (cron) e serve a API do app.
+// Worker do Cloudflare: coleta leituras dos medidores Tuya (cron) e serve a API do app Medidor+.
 //
-// Robustez: o medidor expõe um contador ACUMULADO de energia (fwd_acc_kwh + rev_acc_kwh).
-// Se uma coleta falhar, nenhuma energia é perdida — a próxima leitura cobre o intervalo.
-// Consumo(período) = contador(fim) − contador(início), com interpolação nas bordas.
+// Multi-casa: cada "casa" (home) tem um medidor e uma forma de acesso à Tuya:
+//  - central: o usuário vinculou o app Smart Life ao projeto Tuya do administrador (TUYA_CLIENT_ID/SECRET);
+//  - own: projeto Tuya do próprio usuário (Access ID/Secret guardados criptografados com ENC_KEY).
+// O app se autentica com o token da sua casa. Cadastrar casa exige código de convite (gerado pelo admin);
+// entrar numa casa existente exige código de compartilhamento (gerado por quem já usa).
+//
+// Robustez: o medidor expõe um contador ACUMULADO de energia. Se uma coleta falhar, nenhuma energia
+// é perdida — a próxima leitura cobre o intervalo. Consumo(período) = contador(fim) − contador(início).
 
-const TUYA_BASE = "https://openapi.tuyaus.com"; // Western America Data Center
 const DAY = 86_400_000;
 const enc = new TextEncoder();
 
+const DATA_CENTERS = {
+  us: { label: "Western America (Brasil, EUA)", url: "https://openapi.tuyaus.com" },
+  ueaz: { label: "Eastern America", url: "https://openapi-ueaz.tuyaus.com" },
+  eu: { label: "Central Europe", url: "https://openapi.tuyaeu.com" },
+  weaz: { label: "Western Europe", url: "https://openapi-weaz.tuyaeu.com" },
+  in: { label: "India", url: "https://openapi.tuyain.com" },
+  cn: { label: "China", url: "https://openapi.tuyacn.com" },
+};
+const CENTRAL_BASE = DATA_CENTERS.us.url;
+const MAX_HOMES_PER_RUN = 20; // limite de subrequisições do plano gratuito do Workers
+
 export default {
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(collect(env));
+    ctx.waitUntil(collectAll(env));
   },
 
   async fetch(req, env) {
     const url = new URL(req.url);
     const q = url.searchParams;
-    const auth = req.headers.get("Authorization");
+    const path = url.pathname;
+    const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
 
     // Link de convite para instalar o app: /baixar/<DOWNLOAD_KEY> (página) e .../app.apk (arquivo)
-    const dl = url.pathname.match(/^\/baixar\/([^/]+)(\/app\.apk)?\/?$/);
+    const dl = path.match(/^\/baixar\/([^/]+)(\/app\.apk)?\/?$/);
     if (dl) {
       if (!env.DOWNLOAD_KEY || dl[1] !== env.DOWNLOAD_KEY) {
         return new Response("Link inválido ou expirado.", { status: 404 });
@@ -28,118 +44,214 @@ export default {
     }
 
     // Publicação de nova versão do app (usado pelo android/publicar.ps1)
-    if (url.pathname === "/api/admin/apk") {
-      if (!env.ADMIN_TOKEN || auth !== `Bearer ${env.ADMIN_TOKEN}`) return json({ error: "não autorizado" }, 401);
+    if (path === "/api/admin/apk") {
+      if (!env.ADMIN_TOKEN || bearer !== env.ADMIN_TOKEN) return json({ error: "não autorizado" }, 401);
       if (req.method !== "PUT") return json({ error: "use PUT" }, 405);
       try {
         return json(await publishApk(env, req, q));
       } catch (e) {
-        return json({ error: String(e?.message ?? e) }, 400);
+        return json({ error: errMsg(e) }, 400);
       }
     }
 
-    if (!env.APP_TOKEN || auth !== `Bearer ${env.APP_TOKEN}`) {
-      return json({ error: "não autorizado" }, 401);
-    }
+    // Rotas públicas do cadastro (protegidas pelos códigos)
     try {
-      switch (url.pathname) {
+      if (path === "/api/datacenters") return json(DATA_CENTERS);
+      if (path === "/api/join" && req.method === "POST") return json(await joinHome(env, q.get("code")));
+      if (path === "/api/register/devices" && req.method === "POST") return json(await registerDevices(env, await req.json()));
+      if (path === "/api/register" && req.method === "POST") return json(await registerHome(env, await req.json()));
+    } catch (e) {
+      return json({ error: errMsg(e) }, 400);
+    }
+
+    const home = await authHome(env, bearer);
+    if (!home) return json({ error: "não autorizado" }, 401);
+    // env da requisição com a casa autenticada (bindings continuam acessíveis pelo protótipo)
+    const henv = Object.create(env);
+    henv.HOME = home;
+    const admin = () => {
+      if (!home.tokenAdmin) throw new Error("apenas o administrador");
+    };
+
+    try {
+      switch (path) {
         case "/api/version":
           return json(await appVersion(env));
         case "/api/apk":
           return await downloadApk(env);
+        case "/api/home":
+          return json(await homeInfo(henv));
+        case "/api/home/share":
+          return json(await createCode(env, "share", home.id, 7, 20));
+        case "/api/home/plan":
+          return json(await setPlan(henv, q.get("expires")));
+        case "/api/home/name":
+          return json(await setName(henv, q.get("name")));
+        case "/api/admin/invites":
+          admin();
+          return json(await createCode(env, "invite", null, 30, 1));
+        case "/api/admin/homes":
+          admin();
+          return json(await listHomes(env));
         case "/api/now":
-          return json(await now(env));
+          return json(await now(henv));
         case "/api/daily":
-          return json(await daily(env, q.get("from"), q.get("to")));
+          return json(await daily(henv, q.get("from"), q.get("to")));
         case "/api/period":
-          return json(await period(env, Number(q.get("start")), Number(q.get("end"))));
+          return json(await period(henv, Number(q.get("start")), Number(q.get("end"))));
         case "/api/series":
-          return json(await seriesApi(env, Number(q.get("start")), Number(q.get("end")), q.get("step")));
+          return json(await seriesApi(henv, Number(q.get("start")), Number(q.get("end")), q.get("step")));
         case "/api/power":
-          return json(await powerApi(env, Number(q.get("start")), Number(q.get("end"))));
+          return json(await powerApi(henv, Number(q.get("start")), Number(q.get("end"))));
         case "/api/sessions":
-          return json(await sessionsApi(env, Number(q.get("start")), Number(q.get("end"))));
+          return json(await sessionsApi(henv, Number(q.get("start")), Number(q.get("end"))));
         case "/api/bandeiras":
           if (req.method === "PUT") return json(await setBandeira(env, q.get("month"), q.get("cor")));
           return json(await getBandeiras(env));
         case "/api/collect":
-          return json(await collect(env));
+          return json(await collect(henv));
         default:
           return json({ error: "rota não encontrada" }, 404);
       }
     } catch (e) {
-      return json({ error: String(e?.message ?? e) }, 500);
+      if (isExpired(e)) {
+        await setStatus(env, home.id, "expired", errMsg(e));
+        const msg = home.mode === "own"
+          ? "O plano gratuito da sua conta Tuya expirou. Renove em platform.tuya.com — veja Ajuda → Renovar o plano da Tuya."
+          : "O serviço da Tuya está temporariamente indisponível. O administrador do Medidor+ já foi avisado.";
+        return json({ error: msg, code: "tuya_expired" }, 503);
+      }
+      return json({ error: errMsg(e) }, 500);
     }
   },
 };
 
+const errMsg = (e) => String(e?.message ?? e);
+
 // ---------- Coleta ----------
 
-async function collect(env) {
-  const reading = toReading(await readDevice(env));
-  await insertReading(env, reading);
+async function collect(env, h = env.HOME) {
+  const p = await readDevice(env, h);
+  const reading = toReading(p, h.codes);
+  await insertReading(env, h.id, reading);
   return reading;
 }
 
-function toReading(p) {
-  const fwd = p.fwd_acc_kwh;
-  const rev = p.rev_acc_kwh;
-  if (!fwd || !rev) throw new Error("medidor não retornou fwd_acc_kwh / rev_acc_kwh");
+// Cron: coleta as casas que estão há mais tempo sem coleta (até MAX_HOMES_PER_RUN por execução).
+async function collectAll(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT id FROM homes ORDER BY COALESCE(last_collect, 0) LIMIT ?"
+  )
+    .bind(MAX_HOMES_PER_RUN)
+    .all();
+  for (const { id } of results) {
+    const h = await loadHome(env, id);
+    try {
+      await collect(env, h);
+      await setStatus(env, id, "ok", null);
+    } catch (e) {
+      await setStatus(env, id, isExpired(e) ? "expired" : "error", errMsg(e));
+    }
+  }
+}
+
+async function setStatus(env, id, status, error) {
+  const t = Date.now();
+  await env.DB.prepare(
+    `UPDATE homes SET status = ?1, last_error = ?2, last_collect = ?3,
+       last_ok = CASE WHEN ?1 = 'ok' THEN ?3 ELSE last_ok END WHERE id = ?4`
+  )
+    .bind(status, error, t, id)
+    .run();
+}
+
+/** Converte as propriedades do medidor numa leitura, usando os códigos detectados para o modelo. */
+function toReading(p, codes) {
+  const pts = codes.energy.map((e) => p[e.code]).filter(Boolean);
+  if (!pts.length) throw new Error("o medidor não retornou o contador de energia");
+  const val = (spec) => (spec && p[spec.code] ? p[spec.code].value / 10 ** spec.scale : null);
+  const kwh = codes.energy.reduce((s, e) => s + (val(e) ?? 0), 0); // soma direta+reversa = imune à garra invertida
+  const w = val(codes.power);
+  const v = val(codes.voltage);
   return {
-    ts: Math.max(fwd.time, rev.time), // momento em que o medidor reportou o valor
-    energy: fwd.value + rev.value, // centésimos de kWh (escala 2); soma = imune à garra invertida
-    power: Math.abs(p.p_tot?.value ?? 0), // décimos de W
-    voltage: p.v?.value ?? null, // décimos de V
+    ts: Math.max(...pts.map((x) => x.time)), // momento em que o medidor reportou o valor
+    energy: Math.round(kwh * 100), // centésimos de kWh
+    power: w == null ? 0 : Math.round(Math.abs(w) * 10), // décimos de W
+    voltage: v == null ? null : Math.round(v * 10), // décimos de V
+    current: (codes.current ?? []).reduce((s, c) => s + (val(c) ?? 0) / (c.milli ? 1000 : 1), 0), // A
   };
 }
 
-async function insertReading(env, r) {
-  // ts é PRIMARY KEY: leituras repetidas (medidor sem novo report) são ignoradas.
+async function insertReading(env, homeId, r) {
+  // (home_id, ts) é PRIMARY KEY: leituras repetidas (medidor sem novo report) são ignoradas.
   await env.DB.prepare(
-    "INSERT OR IGNORE INTO readings (ts, energy, power, voltage) VALUES (?, ?, ?, ?)"
+    "INSERT OR IGNORE INTO readings (home_id, ts, energy, power, voltage) VALUES (?, ?, ?, ?, ?)"
   )
-    .bind(r.ts, r.energy, r.power, r.voltage)
+    .bind(homeId, r.ts, r.energy, r.power, r.voltage)
     .run();
 }
 
 // ---------- API Tuya ----------
 
-async function readDevice(env) {
-  const path = `/v2.0/cloud/thing/${env.TUYA_DEVICE_ID}/shadow/properties`;
-  try {
-    return toMap(await tuya(env, path, await getToken(env)));
-  } catch {
-    // token expirado/inválido ou falha transitória: renova o token e tenta mais uma vez
-    return toMap(await tuya(env, path, await getToken(env, true)));
+class TuyaError extends Error {
+  constructor(code, msg) {
+    super(`Tuya ${code}: ${msg}`);
+    this.code = code;
   }
+}
+
+// Plano gratuito (IoT Core) vencido / serviço não assinado
+const isExpired = (e) =>
+  e instanceof TuyaError && (String(e.code).startsWith("28841") || /expire|subscri/i.test(e.message));
+
+/** Credenciais Tuya da casa. */
+async function credsOf(env, h) {
+  if (h.mode === "central") return { id: env.TUYA_CLIENT_ID, secret: env.TUYA_CLIENT_SECRET, base: CENTRAL_BASE };
+  return { id: h.client_id, secret: await decrypt(env, h.secret_enc), base: h.base_url };
+}
+
+async function readDevice(env, h = env.HOME) {
+  const c = await credsOf(env, h);
+  return toMap(await tuyaAuth(env, c, `/v2.0/cloud/thing/${h.device_id}/shadow/properties`));
 }
 
 const toMap = (result) => Object.fromEntries(result.properties.map((p) => [p.code, p]));
 
-async function getToken(env, force = false) {
+/** Chamada autenticada; se o token falhar, renova e tenta mais uma vez (exceto plano vencido). */
+async function tuyaAuth(env, c, path) {
+  try {
+    return await tuya(c, path, await getToken(env, c));
+  } catch (e) {
+    if (isExpired(e)) throw e;
+    return await tuya(c, path, await getToken(env, c, true));
+  }
+}
+
+async function getToken(env, c, force = false) {
+  const key = `token:${c.id}`;
   if (!force) {
-    const row = await env.DB.prepare("SELECT value FROM meta WHERE key = 'token' AND expires > ?")
-      .bind(Date.now() + 60_000)
+    const row = await env.DB.prepare("SELECT value FROM meta WHERE key = ? AND expires > ?")
+      .bind(key, Date.now() + 60_000)
       .first();
     if (row) return row.value;
   }
-  const r = await tuya(env, "/v1.0/token?grant_type=1");
-  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value, expires) VALUES ('token', ?, ?)")
-    .bind(r.access_token, Date.now() + r.expire_time * 1000)
+  const r = await tuya(c, "/v1.0/token?grant_type=1");
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value, expires) VALUES (?, ?, ?)")
+    .bind(key, r.access_token, Date.now() + r.expire_time * 1000)
     .run();
   return r.access_token;
 }
 
-async function tuya(env, path, token = "") {
+async function tuya(c, path, token = "") {
   const t = Date.now().toString();
   const stringToSign = `GET\n${await sha256Hex("")}\n\n${path}`;
-  const sign = await hmacHex(env.TUYA_CLIENT_SECRET, env.TUYA_CLIENT_ID + token + t + stringToSign);
-  const headers = { client_id: env.TUYA_CLIENT_ID, sign, t, sign_method: "HMAC-SHA256" };
+  const sign = await hmacHex(c.secret, c.id + token + t + stringToSign);
+  const headers = { client_id: c.id, sign, t, sign_method: "HMAC-SHA256" };
   if (token) headers.access_token = token;
 
-  const res = await fetch(TUYA_BASE + path, { headers });
+  const res = await fetch(c.base + path, { headers });
   const body = await res.json();
-  if (!body.success) throw new Error(`Tuya ${body.code}: ${body.msg}`);
+  if (!body.success) throw new TuyaError(body.code, body.msg);
   return body.result;
 }
 
@@ -156,17 +268,43 @@ async function hmacHex(secret, msg) {
 
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
+// ---------- Criptografia das credenciais (AES-GCM, chave ENC_KEY em base64) ----------
+
+const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function aesKey(env) {
+  if (!env.ENC_KEY) throw new Error("ENC_KEY não configurada no servidor");
+  return crypto.subtle.importKey("raw", unb64(env.ENC_KEY), "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+async function encrypt(env, text) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(env), enc.encode(text)));
+  const all = new Uint8Array(iv.length + ct.length);
+  all.set(iv);
+  all.set(ct, iv.length);
+  return b64(all);
+}
+
+async function decrypt(env, data) {
+  const all = unb64(data);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: all.slice(0, 12) }, await aesKey(env), all.slice(12));
+  return new TextDecoder().decode(pt);
+}
+
 // ---------- Cálculo de consumo ----------
 
 // Leituras que cobrem [start, end], incluindo a última antes e a primeira depois (para interpolar).
 async function loadRows(env, start, end) {
   const { results } = await env.DB.prepare(
     `SELECT ts, energy FROM readings
-      WHERE ts >= COALESCE((SELECT MAX(ts) FROM readings WHERE ts <= ?1), 0)
-        AND ts <= COALESCE((SELECT MIN(ts) FROM readings WHERE ts >= ?2), ?2)
+      WHERE home_id = ?3
+        AND ts >= COALESCE((SELECT MAX(ts) FROM readings WHERE home_id = ?3 AND ts <= ?1), 0)
+        AND ts <= COALESCE((SELECT MIN(ts) FROM readings WHERE home_id = ?3 AND ts >= ?2), ?2)
       ORDER BY ts`
   )
-    .bind(start, end)
+    .bind(start, end, env.HOME.id)
     .all();
   return results;
 }
@@ -234,9 +372,9 @@ function consumption(s, start, end) {
 
 async function loadManual(env, start, end) {
   const { results } = await env.DB.prepare(
-    "SELECT date, kwh, estimated FROM manual_daily WHERE date BETWEEN ? AND ?"
+    "SELECT date, kwh, estimated FROM manual_daily WHERE home_id = ? AND date BETWEEN ? AND ?"
   )
-    .bind(localDate(start, env), localDate(end - 1, env))
+    .bind(env.HOME.id, localDate(start, env), localDate(end - 1, env))
     .all();
   return Object.fromEntries(results.map((r) => [r.date, r]));
 }
@@ -283,8 +421,9 @@ function rangeConsumption(s, start, end, manual, env) {
 
 async function now(env) {
   const p = await readDevice(env);
-  const r = toReading(p);
-  await insertReading(env, r); // aproveita a consulta para gravar mais uma leitura
+  const r = toReading(p, env.HOME.codes);
+  await insertReading(env, env.HOME.id, r); // aproveita a consulta para gravar mais uma leitura
+  await setStatus(env, env.HOME.id, "ok", null);
 
   const t = Date.now();
   const today = dayFloor(t, env);
@@ -295,7 +434,7 @@ async function now(env) {
   return {
     powerW: r.power / 10,
     voltageV: (r.voltage ?? 0) / 10,
-    currentA: ((p.a_i?.value ?? 0) + (p.b_i?.value ?? 0)) / 1000,
+    currentA: Math.round(r.current * 1000) / 1000,
     totalKwh: r.energy / 100,
     updatedAt: Math.max(...Object.values(p).map((x) => x.time)),
     todayKwh: td?.kwh ?? null,
@@ -381,9 +520,9 @@ async function powerApi(env, start, end) {
     throw new Error("use start e end em ms (máx. 7 dias)");
   }
   const { results } = await env.DB.prepare(
-    "SELECT ts, power FROM readings WHERE ts BETWEEN ? AND ? ORDER BY ts"
+    "SELECT ts, power FROM readings WHERE home_id = ? AND ts BETWEEN ? AND ? ORDER BY ts"
   )
-    .bind(start, end)
+    .bind(env.HOME.id, start, end)
     .all();
   return results.map((r) => ({ ts: r.ts, w: (r.power ?? 0) / 10 }));
 }
@@ -401,11 +540,12 @@ async function sessionsApi(env, start, end) {
   }
   const { results: rows } = await env.DB.prepare(
     `SELECT ts, energy, power FROM readings
-      WHERE ts >= COALESCE((SELECT MAX(ts) FROM readings WHERE ts <= ?1), 0)
-        AND ts <= COALESCE((SELECT MIN(ts) FROM readings WHERE ts >= ?2), ?2)
+      WHERE home_id = ?3
+        AND ts >= COALESCE((SELECT MAX(ts) FROM readings WHERE home_id = ?3 AND ts <= ?1), 0)
+        AND ts <= COALESCE((SELECT MIN(ts) FROM readings WHERE home_id = ?3 AND ts >= ?2), ?2)
       ORDER BY ts`
   )
-    .bind(start, end)
+    .bind(start, end, env.HOME.id)
     .all();
 
   const sessions = [];
@@ -461,9 +601,9 @@ async function sessionsApi(env, start, end) {
   // Recargas do histórico anotado (sem horário), nos dias ainda não cobertos pelas leituras
   const firstTs = rows.length ? rows[0].ts : Infinity;
   const { results: man } = await env.DB.prepare(
-    "SELECT date, kwh, note FROM manual_daily WHERE estimated = 0 AND date BETWEEN ? AND ?"
+    "SELECT date, kwh, note FROM manual_daily WHERE home_id = ? AND estimated = 0 AND date BETWEEN ? AND ?"
   )
-    .bind(localDate(start, env), localDate(end - 1, env))
+    .bind(env.HOME.id, localDate(start, env), localDate(end - 1, env))
     .all();
   for (const m of man) {
     const ds = dayStart(m.date, env);
@@ -536,7 +676,8 @@ async function downloadPage(env) {
        <ol>
          <li>Toque em <b>Baixar app</b> e depois abra o arquivo baixado.</li>
          <li>Se o Android pedir, toque em <b>Configurações</b> e ative <b>Permitir desta fonte</b>. Depois volte.</li>
-         <li>Toque em <b>Instalar</b> e abra o app. Ele já vem configurado.</li>
+         <li>Toque em <b>Instalar</b> e abra o app.</li>
+         <li>No app, use o <b>código</b> que você recebeu junto com este link (de acesso à casa ou de convite).</li>
        </ol>
        <p class="foot">As próximas versões chegam pelo próprio app. Não é preciso voltar aqui.</p>`
     : `<p class="meta">Nenhuma versão publicada ainda.</p>`;
@@ -588,6 +729,264 @@ async function publishApk(env, req, q) {
   await env.APK.put("app.apk", data);
   await env.APK.put("version", JSON.stringify(info));
   return info;
+}
+
+// ---------- Casas (multi-usuário) ----------
+
+async function authHome(env, token) {
+  if (!token) return null;
+  let id = null;
+  let admin = false;
+  if (env.APP_TOKEN && token === env.APP_TOKEN) {
+    id = "casa1"; // instalações da primeira versão (aparelho do administrador)
+    admin = true;
+  } else {
+    const row = await env.DB.prepare("SELECT home_id, is_admin FROM home_tokens WHERE token = ?").bind(token).first();
+    id = row?.home_id;
+    admin = !!row?.is_admin;
+  }
+  const h = id ? await loadHome(env, id) : null;
+  if (h) h.tokenAdmin = admin; // administrador é o aparelho, não a casa
+  return h;
+}
+
+async function loadHome(env, id) {
+  const h = await env.DB.prepare("SELECT * FROM homes WHERE id = ?").bind(id).first();
+  if (!h) return null;
+  h.codes = JSON.parse(h.codes);
+  return h;
+}
+
+const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem 0/O e 1/I para não confundir
+function randomCode(n) {
+  const bytes = crypto.getRandomValues(new Uint8Array(n));
+  return [...bytes].map((b) => ALPHABET[b % ALPHABET.length]).join("");
+}
+const randomToken = () => hex(crypto.getRandomValues(new Uint8Array(24)));
+
+/** Código de convite (cadastrar casa) ou de compartilhamento (entrar numa casa). */
+async function createCode(env, kind, homeId, days, uses) {
+  const code = randomCode(8);
+  const expires = Date.now() + days * DAY;
+  await env.DB.prepare(
+    "INSERT INTO codes (code, kind, home_id, expires, uses_left, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  )
+    .bind(code, kind, homeId, expires, uses, Date.now())
+    .run();
+  return { code, expires };
+}
+
+async function checkCode(env, code, kind) {
+  const c = String(code ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const row = await env.DB.prepare(
+    "SELECT * FROM codes WHERE code = ? AND kind = ? AND expires > ? AND uses_left > 0"
+  )
+    .bind(c, kind, Date.now())
+    .first();
+  if (!row) throw new Error(kind === "invite" ? "Código de convite inválido ou expirado." : "Código de acesso inválido ou expirado.");
+  return row;
+}
+
+const useCode = (env, code) =>
+  env.DB.prepare("UPDATE codes SET uses_left = uses_left - 1 WHERE code = ?").bind(code).run();
+
+async function newToken(env, homeId, admin = false) {
+  const token = randomToken();
+  await env.DB.prepare("INSERT INTO home_tokens (token, home_id, is_admin, created_at) VALUES (?, ?, ?, ?)")
+    .bind(token, homeId, admin ? 1 : 0, Date.now())
+    .run();
+  return token;
+}
+
+/** Entrar numa casa existente com o código de compartilhamento. */
+async function joinHome(env, code) {
+  const row = await checkCode(env, code, "share");
+  await useCode(env, row.code);
+  const token = await newToken(env, row.home_id, !!row.admin);
+  const h = await loadHome(env, row.home_id);
+  h.tokenAdmin = !!row.admin;
+  return { token, home: await homeInfo(Object.assign(Object.create(env), { HOME: h })) };
+}
+
+/** Credenciais informadas no cadastro (modo own) ou as do projeto central. */
+function regCreds(env, body) {
+  if (body.mode === "central") return { id: env.TUYA_CLIENT_ID, secret: env.TUYA_CLIENT_SECRET, base: CENTRAL_BASE };
+  const dc = DATA_CENTERS[body.dataCenter];
+  if (!dc) throw new Error("Escolha o data center do seu projeto Tuya.");
+  const id = String(body.clientId ?? "").trim();
+  const secret = String(body.secret ?? "").trim();
+  if (!id || !secret) throw new Error("Informe o Access ID e o Access Secret do projeto Tuya.");
+  return { id, secret, base: dc.url };
+}
+
+/** Modo own: testa as credenciais e lista os aparelhos do projeto do usuário. */
+async function registerDevices(env, body) {
+  await checkCode(env, body.invite, "invite");
+  const c = regCreds(env, { ...body, mode: "own" });
+  let token;
+  try {
+    token = await tuya(c, "/v1.0/token?grant_type=1");
+  } catch (e) {
+    throw new Error(`A Tuya recusou o Access ID/Secret (${errMsg(e)}). Confira os valores e o data center.`);
+  }
+  const r = await tuya(c, "/v2.0/cloud/thing/device?page_size=20", token.access_token);
+  const list = Array.isArray(r) ? r : r?.list ?? r?.devices ?? [];
+  return list.map((d) => ({
+    id: d.id,
+    name: d.name ?? d.customName ?? d.product_name ?? d.id,
+    product: d.product_name ?? d.productName ?? "",
+    online: d.is_online ?? d.isOnline ?? d.online ?? null,
+  }));
+}
+
+// Códigos conhecidos de medidores Tuya (o primeiro encontrado vence)
+const FWD_CODES = ["fwd_acc_kwh", "forward_energy_total", "total_forward_energy", "forward_energy", "energy_forward_a"];
+const REV_CODES = ["rev_acc_kwh", "reverse_energy_total", "total_reverse_energy", "reverse_energy", "energy_reverse_a"];
+const POWER_CODES = ["p_tot", "total_power", "cur_power", "power", "active_power", "power_a"];
+const VOLT_CODES = ["v", "cur_voltage", "voltage", "voltage_a"];
+const CURRENT_GROUPS = [["a_i", "b_i"], ["cur_current"], ["current"], ["current_a"]];
+
+/** Descobre quais propriedades do modelo são energia acumulada, potência, tensão e corrente. */
+function detectCodes(props, solar) {
+  const by = Object.fromEntries(props.map((p) => [p.code, p]));
+  const spec = (code) => {
+    const p = by[code];
+    if (!p) return null;
+    const ts = p.typeSpec ?? {};
+    return { code, scale: Number(ts.scale ?? 0), unit: String(ts.unit ?? "") };
+  };
+  const first = (list) => list.map(spec).find(Boolean) ?? null;
+  const fwd = first(FWD_CODES);
+  // Com geração solar, a energia "reversa" é a injetada na rede: não pode somar como consumo.
+  const rev = solar ? null : first(REV_CODES);
+  const energy = [fwd, rev].filter(Boolean).map(({ code, scale }) => ({ code, scale }));
+  if (!energy.length) return null;
+  let current = [];
+  for (const group of CURRENT_GROUPS) {
+    const specs = group.map(spec).filter(Boolean);
+    if (specs.length) {
+      current = specs.map(({ code, scale, unit }) => ({ code, scale, milli: /^ma$/i.test(unit) }));
+      break;
+    }
+  }
+  const strip = (s) => (s ? { code: s.code, scale: s.scale } : null);
+  return { energy, power: strip(first(POWER_CODES)), voltage: strip(first(VOLT_CODES)), current };
+}
+
+async function modelProps(env, c, deviceId) {
+  const r = await tuyaAuth(env, c, `/v2.0/cloud/thing/${deviceId}/model`);
+  const model = typeof r.model === "string" ? JSON.parse(r.model) : r.model;
+  return (model?.services ?? []).flatMap((s) => s.properties ?? []);
+}
+
+/** Cria a casa: valida convite, aparelho e compatibilidade; devolve o token do app. */
+async function registerHome(env, body) {
+  const invite = await checkCode(env, body.invite, "invite");
+  const mode = body.mode === "own" ? "own" : "central";
+  const c = regCreds(env, { ...body, mode });
+  const deviceId = String(body.deviceId ?? "").trim();
+  if (!/^[a-z0-9]{10,32}$/i.test(deviceId)) throw new Error("ID do aparelho inválido.");
+  const name = String(body.name ?? "").trim().slice(0, 40) || "Minha casa";
+
+  const exists = await env.DB.prepare("SELECT id FROM homes WHERE device_id = ?").bind(deviceId).first();
+  if (exists) throw new Error("Este medidor já está cadastrado. Peça o código de acesso a quem já usa.");
+
+  let props;
+  try {
+    props = await modelProps(env, c, deviceId);
+  } catch (e) {
+    throw new Error(
+      mode === "central"
+        ? `Medidor não encontrado (${errMsg(e)}). Confira o ID e se o QR de vínculo foi escaneado no Smart Life.`
+        : `Medidor não encontrado no seu projeto (${errMsg(e)}).`
+    );
+  }
+  const codes = detectCodes(props, !!body.solar);
+  if (!codes) throw new Error("Este aparelho não informa energia acumulada (kWh) — não é compatível com o Medidor+.");
+
+  // Testa a leitura antes de salvar
+  const p = toMap(await tuyaAuth(env, c, `/v2.0/cloud/thing/${deviceId}/shadow/properties`));
+  const reading = toReading(p, codes);
+
+  const plan = /^\d{4}-\d{2}-\d{2}$/.test(body.planExpires ?? "") ? body.planExpires : null;
+  const id = randomCode(10).toLowerCase();
+  await env.DB.prepare(
+    `INSERT INTO homes (id, name, mode, client_id, secret_enc, base_url, device_id, codes, plan_expires,
+       is_admin, status, last_ok, last_collect, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'ok', ?, ?, ?)`
+  )
+    .bind(
+      id, name, mode,
+      mode === "own" ? c.id : null,
+      mode === "own" ? await encrypt(env, c.secret) : null,
+      c.base, deviceId, JSON.stringify(codes), mode === "own" ? plan : null,
+      Date.now(), Date.now(), Date.now()
+    )
+    .run();
+  await useCode(env, invite.code);
+  await insertReading(env, id, reading);
+  const token = await newToken(env, id);
+  return { token, home: await homeInfo(Object.assign(Object.create(env), { HOME: await loadHome(env, id) })) };
+}
+
+async function centralPlan(env) {
+  return (await env.DB.prepare("SELECT value FROM meta WHERE key = 'central_plan_expires'").first())?.value ?? null;
+}
+
+async function homeInfo(env) {
+  const h = env.HOME;
+  return {
+    id: h.id,
+    name: h.name,
+    mode: h.mode,
+    deviceId: h.device_id,
+    // casa central: o plano é o do administrador (só o admin precisa renovar)
+    planExpires: h.mode === "own" ? h.plan_expires : await centralPlan(env),
+    status: h.status,
+    lastOk: h.last_ok,
+    lastError: h.last_error,
+    isAdmin: !!h.tokenAdmin,
+  };
+}
+
+/** Data de vencimento do plano da Tuya: da própria casa (own) ou do projeto central (admin). */
+async function setPlan(env, expires) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(expires ?? "")) throw new Error("use expires=AAAA-MM-DD");
+  const h = env.HOME;
+  if (h.mode === "own") {
+    await env.DB.prepare("UPDATE homes SET plan_expires = ? WHERE id = ?").bind(expires, h.id).run();
+  } else if (h.tokenAdmin) {
+    await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value, expires) VALUES ('central_plan_expires', ?, 0)")
+      .bind(expires)
+      .run();
+  } else {
+    throw new Error("O plano desta casa é renovado pelo administrador.");
+  }
+  // Após renovar, tenta coletar para atualizar o status
+  try {
+    await collect(env);
+    await setStatus(env, h.id, "ok", null);
+  } catch (e) {
+    await setStatus(env, h.id, isExpired(e) ? "expired" : "error", errMsg(e));
+  }
+  env.HOME = await loadHome(env, h.id);
+  env.HOME.tokenAdmin = h.tokenAdmin;
+  return homeInfo(env);
+}
+
+async function setName(env, name) {
+  const n = String(name ?? "").trim().slice(0, 40);
+  if (!n) throw new Error("Informe um nome.");
+  await env.DB.prepare("UPDATE homes SET name = ? WHERE id = ?").bind(n, env.HOME.id).run();
+  env.HOME.name = n;
+  return homeInfo(env);
+}
+
+async function listHomes(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT id, name, mode, status, last_ok, last_error, plan_expires FROM homes ORDER BY created_at"
+  ).all();
+  return { centralPlanExpires: await centralPlan(env), homes: results };
 }
 
 // ---------- Datas (fuso fixo, padrão Brasília UTC−3) ----------
