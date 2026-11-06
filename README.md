@@ -41,13 +41,13 @@ npx wrangler secret put APP_TOKEN           # uma senha longa inventada por voc√
 npx wrangler deploy
 ```
 
-O deploy mostra a URL, algo como `https://consumo-tuya.<seu-usuario>.workers.dev`.
+O deploy mostra a URL, algo como `https://app.<seu-subdominio>.workers.dev`.
 
 ### Testar
 
 ```powershell
 $h = @{ Authorization = "Bearer SEU_APP_TOKEN" }
-$u = "https://consumo-tuya.<seu-usuario>.workers.dev"
+$u = "https://app.<seu-subdominio>.workers.dev"
 Invoke-RestMethod "$u/api/collect" -Headers $h   # for√ßa uma coleta
 Invoke-RestMethod "$u/api/now" -Headers $h
 Invoke-RestMethod "$u/api/daily?from=2026-11-01&to=2026-11-06" -Headers $h

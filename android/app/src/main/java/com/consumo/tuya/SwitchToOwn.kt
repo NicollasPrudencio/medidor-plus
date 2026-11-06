@@ -109,16 +109,9 @@ fun SwitchToOwnScreen(prefs: Prefs, home: HomeInfo, onClose: () -> Unit, onUpdat
                             "No projeto, aba Overview: copie o Access ID/Client ID e o Access Secret/Client Secret (ícone do olho).",
                             style = MaterialTheme.typography.bodyLarge,
                         )
-                        OutlinedTextField(
-                            value = clientId, onValueChange = { clientId = it.trim() }, singleLine = true,
-                            label = { Text("Access ID / Client ID") }, modifier = Modifier.fillMaxWidth(),
-                        )
-                        OutlinedTextField(
-                            value = secret, onValueChange = { secret = it.trim() }, singleLine = true,
-                            label = { Text("Access Secret / Client Secret") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        Text("Fez o portal no computador? Mande as duas chaves para você mesmo (ex.: WhatsApp Web) e copie aqui no celular. Use o botão Colar.", style = MaterialTheme.typography.bodySmall)
+                        KeyField(clientId, "Access ID / Client ID") { clientId = it }
+                        KeyField(secret, "Access Secret / Client Secret", secret = true) { secret = it }
                         Text("Data center do projeto (aparece no Overview):", style = MaterialTheme.typography.bodySmall)
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             DATA_CENTERS.forEach { (code, label) ->

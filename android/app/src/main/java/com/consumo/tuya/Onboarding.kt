@@ -40,7 +40,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -267,15 +269,9 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
                     "Passo ${OWN_GUIDE.size + 1}: copie as chaves",
                     "No projeto, aba Overview: copie o Access ID/Client ID e o Access Secret/Client Secret (toque no ícone do olho para ver).",
                 )
-                OutlinedTextField(
-                    value = clientId, onValueChange = { clientId = it.trim() }, singleLine = true,
-                    label = { Text("Access ID / Client ID") }, modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = secret, onValueChange = { secret = it.trim() }, singleLine = true,
-                    label = { Text("Access Secret / Client Secret") },
-                    visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
-                )
+                Text("Fez o portal no computador? Mande as duas chaves para você mesmo (ex.: WhatsApp Web) e copie aqui no celular. Use o botão Colar.", style = MaterialTheme.typography.bodySmall)
+                KeyField(clientId, "Access ID / Client ID") { clientId = it }
+                KeyField(secret, "Access Secret / Client Secret", secret = true) { secret = it }
                 Text("Data center do projeto (aparece no Overview):", style = MaterialTheme.typography.bodySmall)
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     DATA_CENTERS.forEach { (code, label) ->
@@ -335,7 +331,7 @@ fun OnboardingScreen(prefs: Prefs, onDone: (HomeInfo) -> Unit) {
                 if (mode == "own") {
                     Text("Quando vence o plano gratuito da Tuya?", fontWeight = FontWeight.Bold)
                     Text(
-                        "No portal: Cloud → seu projeto → Service API (ou Purchase): veja a data de expiração do IoT Core. O app avisa alguns dias antes.",
+                        "No portal: Cloud → seu projeto → aba Service API (ou menu Purchase): ao lado de IoT Core aparece até quando vale o plano gratuito. O app avisa alguns dias antes de vencer.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     PlanDateField(planExpires) { planExpires = it }
@@ -400,6 +396,23 @@ private fun CodeField(value: String, label: String, onChange: (String) -> Unit) 
         placeholder = { Text("8 letras/números") },
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
         textStyle = MaterialTheme.typography.headlineSmall,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/** Caixa para colar as chaves do portal da Tuya (com botão "Colar"). */
+@Composable
+fun KeyField(value: String, label: String, secret: Boolean = false, onChange: (String) -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    OutlinedTextField(
+        value = value,
+        onValueChange = { onChange(it.trim()) },
+        singleLine = true,
+        label = { Text(label) },
+        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+        trailingIcon = {
+            TextButton(onClick = { clipboard.getText()?.text?.let { onChange(it.trim()) } }) { Text("Colar") }
+        },
         modifier = Modifier.fillMaxWidth(),
     )
 }

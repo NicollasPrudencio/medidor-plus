@@ -301,9 +301,21 @@ class Prefs(ctx: Context) {
     private val sp = ctx.getSharedPreferences("config", Context.MODE_PRIVATE)
 
     // Padrões embutidos no build (publish.properties); o usuário pode sobrescrever em "Avançado".
+    // Só guarda a URL se o usuário trocar em "Avançado"; senão usa sempre a embutida no app
+    // (assim, quando o endereço do servidor muda, basta atualizar o app).
     var url: String
-        get() = sp.getString("url", null) ?: BuildConfig.DEFAULT_URL
-        set(v) = sp.edit().putString("url", v.ifBlank { BuildConfig.DEFAULT_URL }).apply()
+        get() {
+            if (!sp.getBoolean("urlMigrated2", false)) {
+                // endereço antigo do servidor: descarta e passa a usar o padrão do app
+                sp.edit().remove("url").putBoolean("urlMigrated2", true).apply()
+            }
+            return sp.getString("url", null) ?: BuildConfig.DEFAULT_URL
+        }
+        set(v) {
+            val clean = v.trim().trimEnd('/')
+            if (clean.isBlank() || clean == BuildConfig.DEFAULT_URL) sp.edit().remove("url").apply()
+            else sp.edit().putString("url", clean).apply()
+        }
 
     /** Token deste aparelho na sua casa (obtido no cadastro ou com o código de acesso). */
     var token: String

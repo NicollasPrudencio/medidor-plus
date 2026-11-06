@@ -180,7 +180,9 @@ function toReading(p, codes) {
   const w = val(codes.power);
   const v = val(codes.voltage);
   return {
-    ts: Math.max(...pts.map((x) => x.time)), // momento em que o medidor reportou o valor
+    // Momento da leitura = report mais recente do medidor (energia, potência ou tensão). Parado (sem
+    // consumo), o contador não muda e não é reenviado, mas os outros reports provam que segue valendo.
+    ts: Math.max(...[...pts, p[codes.power?.code], p[codes.voltage?.code]].filter(Boolean).map((x) => x.time)),
     energy: Math.round(kwh * 100), // centésimos de kWh
     power: w == null ? 0 : Math.round(Math.abs(w) * 10), // décimos de W
     voltage: v == null ? null : Math.round(v * 10), // décimos de V
