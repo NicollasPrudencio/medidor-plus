@@ -756,7 +756,7 @@ async function authHome(env, token, viewId = null) {
   }
   // Administrador abrindo outra casa: acesso total, mas sem virar o responsável dela
   const viewing = admin && viewId && viewId !== id;
-  if (viewId && viewId !== id && !admin) return { denied: true }; // só o administrador abre outras casas
+  if (id && viewId && viewId !== id && !admin) return { denied: true }; // só o administrador abre outras casas
   const h = id ? await loadHome(env, viewing ? viewId : id) : null;
   if (h) {
     h.tokenAdmin = admin; // administrador é o aparelho, não a casa
