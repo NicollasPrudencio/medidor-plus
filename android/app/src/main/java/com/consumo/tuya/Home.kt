@@ -260,6 +260,14 @@ fun HomeSection(prefs: Prefs, home: HomeInfo?, onHome: (HomeInfo) -> Unit, onRen
         Text("Plano da Tuya: vence em ${fmtIsoDate(home.planExpires)}", style = MaterialTheme.typography.bodyMedium)
         OutlinedButton(onClick = onRenew, modifier = Modifier.fillMaxWidth()) { Text("Renovar / alterar vencimento") }
     }
+    if (home.own && !home.isOwner) {
+        // Dono que trocou de celular: reconectar a conta Tuya prova que é o dono e devolve os avisos/renovação
+        Text(
+            "Esta casa usa o projeto Tuya do responsável por ela. Se você é o dono e trocou de celular, reconecte o seu projeto para voltar a receber os avisos de renovação.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedButton(onClick = { showSwitch = true }, modifier = Modifier.fillMaxWidth()) { Text("Sou o dono — reconectar meu projeto Tuya") }
+    }
     if (!home.own) {
         OutlinedButton(onClick = { showSwitch = true }, modifier = Modifier.fillMaxWidth()) { Text("Usar meu próprio projeto Tuya") }
         Text(
