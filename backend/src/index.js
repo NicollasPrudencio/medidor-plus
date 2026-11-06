@@ -681,7 +681,7 @@ async function downloadPage(env) {
   const body = has
     ? `<p class="meta">Versão ${esc(v.versionName)} · ${mb} MB</p>
        ${v.notes ? `<p class="notes">${esc(v.notes)}</p>` : ""}
-       <a class="btn" href="app.apk" download>Baixar app</a>
+       <a class="btn" href="/baixar/${env.DOWNLOAD_KEY}/app.apk" download>Baixar app</a>
        <ol>
          <li>Toque em <b>Baixar app</b> e depois abra o arquivo baixado.</li>
          <li>Se o Android pedir, toque em <b>Configurações</b> e ative <b>Permitir desta fonte</b>. Depois volte.</li>
