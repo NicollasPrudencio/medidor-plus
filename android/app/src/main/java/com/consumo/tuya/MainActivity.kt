@@ -55,6 +55,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.time.Instant
@@ -108,6 +112,19 @@ fun App(prefs: Prefs) {
             error = e.message ?: e.toString()
         }
         loading = false
+    }
+
+    // Atualiza "Agora" a cada 30 s só enquanto o app está visível (pausa em segundo plano).
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(30_000)
+                if (prefs.configured && !loading) {
+                    runCatching { prefs.api().now() }.onSuccess { now = it; error = null }
+                }
+            }
+        }
     }
 
     Column(

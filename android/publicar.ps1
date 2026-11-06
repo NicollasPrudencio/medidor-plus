@@ -1,4 +1,4 @@
-# Compila o APK release e publica no servidor como nova versão do app.
+﻿# Compila o APK release e publica no servidor como nova versão do app.
 #
 # Uso (na pasta android):
 #   .\publicar.ps1 -Notas "Novos gráficos"            # atualização OBRIGATÓRIA (padrão)
@@ -24,10 +24,15 @@ $code = [int][regex]::Match($gradle, 'versionCode\s*=\s*(\d+)').Groups[1].Value
 $name = [regex]::Match($gradle, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
 Write-Host "Publicando versão $name (versionCode $code)..." -ForegroundColor Cyan
 
-# JDK embutido no Android Studio
+# JDK 17–21 (Gradle 8.9 não roda com Java 25, que é o embutido nas versões novas do Android Studio).
+# Usa o JBR 21 que o Android Studio baixa em ~/.jdks; senão, o JBR embutido.
 if (-not $env:JAVA_HOME) {
-    foreach ($p in @("C:\Program Files\Android\Android Studio\jbr", "$env:LOCALAPPDATA\Programs\Android Studio\jbr")) {
-        if (Test-Path $p) { $env:JAVA_HOME = $p; break }
+    $jdk = Get-ChildItem "$env:USERPROFILE\.jdks" -Directory -Filter "jbr-21*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($jdk) { $env:JAVA_HOME = $jdk.FullName }
+    else {
+        foreach ($p in @("C:\Program Files\Android\Android Studio\jbr", "$env:LOCALAPPDATA\Programs\Android Studio\jbr")) {
+            if (Test-Path $p) { $env:JAVA_HOME = $p; break }
+        }
     }
 }
 
