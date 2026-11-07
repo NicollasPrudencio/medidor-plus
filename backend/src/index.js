@@ -219,19 +219,45 @@ async function credsOf(env, h) {
   return { id: h.client_id, secret: await decrypt(env, h.secret_enc), base: h.base_url };
 }
 
+// Leitura reaproveitada por alguns segundos: vários pedidos seguidos (modo ao vivo, mais de um
+// celular) viram uma só chamada à Tuya — o plano gratuito tem limite mensal de chamadas.
+const SHADOW_CACHE_MS = 15_000;
+
 async function readDevice(env, h = env.HOME) {
+  const key = `shadow:${h.id}`;
+  const cached = await env.DB.prepare("SELECT value FROM meta WHERE key = ? AND expires > ?")
+    .bind(key, Date.now())
+    .first();
+  if (cached) return JSON.parse(cached.value);
   const c = await credsOf(env, h);
-  return toMap(await tuyaAuth(env, c, `/v2.0/cloud/thing/${h.device_id}/shadow/properties`));
+  const props = toMap(await tuyaAuth(env, c, `/v2.0/cloud/thing/${h.device_id}/shadow/properties`));
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value, expires) VALUES (?, ?, ?)")
+    .bind(key, JSON.stringify(props), Date.now() + SHADOW_CACHE_MS)
+    .run();
+  return props;
+}
+
+/** Conta as chamadas à Tuya do mês, por projeto (limite do plano gratuito: ~26 mil/mês). */
+async function countCall(env, c) {
+  const key = `calls:${new Date().toISOString().slice(0, 7)}:${c.id}`;
+  await env.DB.prepare(
+    `INSERT INTO meta (key, value, expires) VALUES (?, '1', 0)
+     ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`
+  )
+    .bind(key)
+    .run();
 }
 
 const toMap = (result) => Object.fromEntries(result.properties.map((p) => [p.code, p]));
 
 /** Chamada autenticada; se o token falhar, renova e tenta mais uma vez (exceto plano vencido). */
 async function tuyaAuth(env, c, path) {
+  await countCall(env, c);
   try {
     return await tuya(c, path, await getToken(env, c));
   } catch (e) {
     if (isExpired(e)) throw e;
+    await countCall(env, c);
     return await tuya(c, path, await getToken(env, c, true));
   }
 }
@@ -244,6 +270,7 @@ async function getToken(env, c, force = false) {
       .first();
     if (row) return row.value;
   }
+  await countCall(env, c);
   const r = await tuya(c, "/v1.0/token?grant_type=1");
   await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value, expires) VALUES (?, ?, ?)")
     .bind(key, r.access_token, Date.now() + r.expire_time * 1000)
@@ -1082,7 +1109,14 @@ async function listHomes(env) {
   const { results } = await env.DB.prepare(
     "SELECT id, name, mode, status, last_ok, last_error, plan_expires FROM homes ORDER BY created_at"
   ).all();
-  return { centralPlanExpires: await centralPlan(env), homes: results };
+  const { results: calls } = await env.DB.prepare("SELECT key, value FROM meta WHERE key LIKE ?")
+    .bind(`calls:${new Date().toISOString().slice(0, 7)}:%`)
+    .all();
+  return {
+    centralPlanExpires: await centralPlan(env),
+    homes: results,
+    tuyaCallsThisMonth: Object.fromEntries(calls.map((r) => [r.key.split(":")[2], Number(r.value)])),
+  };
 }
 
 // ---------- Datas (fuso fixo, padrão Brasília UTC−3) ----------
